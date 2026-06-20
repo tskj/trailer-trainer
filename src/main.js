@@ -29,7 +29,8 @@ import { createScene } from './render3d.js';
   const LR=L*0.45, LF=L-LR, IZ=360, YAW_DAMP=3.0;   // COG offsets, yaw inertia, spin damping (catchable drift)
   // ---- trailer tyre: grips at parking speed (~old kinematic feel), slides at the
   //      limit; braking locks its wheel so it fishtails on the brakes ----
-  const GRIP_T=125, KT=8.0, IT=550, DAMP_T=4.5, TBRAKE_GRIP=0.3;
+  const GRIP_T=88, KT=8.0, IT=550, DAMP_T=4.5, TBRAKE_GRIP=0.22;
+  const COUPLE=0.55;                                // how hard the trailer yanks the car back (two-way)
   // ---- steering: no auto-centre, so a set turn radius is held ----
   const MAX_STEER=36*Math.PI/180;
   // keyboard steering mirrors the throttle: force + viscous drag + coulomb return,
@@ -435,68 +436,69 @@ import { createScene } from './render3d.js';
     }
     st.delta = clamp(st.delta, -MAX_STEER, MAX_STEER);
 
-    // dynamic single-track model: longitudinal drive/brake + saturating lateral
-    // tyres. Below the grip limit the car tracks its heading (like the old
-    // kinematic model); past it, it slides. The trailer follows the *actual* hitch
-    // velocity, so it swings out when the car slides (kinematic, no own slip yet).
+    // dynamic single-track model with a dynamic trailer, TWO-WAY coupled at the
+    // hitch: the car's tyres slide past their grip limit (drift), and the trailer's
+    // tyre force feeds back through the hitch to yank the car around (so a high-speed
+    // fold throws the car instead of ending the run).
     const nsub=Math.max(1,Math.ceil(dt/(1/240))), h=dt/nsub;
+    const d = LR + hitchC;                                  // COG -> hitch distance
     for(let i=0;i<nsub;i++){
       const cth=Math.cos(st.theta), sth=Math.sin(st.theta);
       let u=st.v, w=st.vlat, om=st.omega;
       let cogx = st.x + LR*cth, cogy = st.y + LR*sth;        // COG = rear axle + LR forward
 
-      // longitudinal force (acceleration units, mass = 1)
-      let Fx = throttle*DRIVE - reverse*REV;
-      Fx -= braking*BRAKE*Math.tanh(u*0.4);                  // brake opposes forward motion
-      Fx -= DRAG_L*u + ROLL_L*Math.tanh(u*3);                // viscous + coulomb resistance
+      // --- trailer tyre force first, so it can yank the car this substep ---
+      const cogvx0=u*cth - w*sth, cogvy0=u*sth + w*cth;      // COG world velocity (start)
+      const Vhx = cogvx0 + om*d*sth, Vhy = cogvy0 - om*d*cth; // hitch world velocity
+      const cph=Math.cos(st.phi), sph=Math.sin(st.phi);
+      const twx = Vhx + st.omegaT*draw_d*sph, twy = Vhy - st.omegaT*draw_d*cph;
+      const vFwdT = twx*cph + twy*sph, vLatT = -twx*sph + twy*cph;
+      const fadeT = Math.min(1, Math.hypot(vFwdT,vLatT)/3);
+      const aT = Math.atan2(vLatT, Math.max(Math.abs(vFwdT), 3));
+      const gT = GRIP_T*(braking ? TBRAKE_GRIP : 1);        // brakes lock the trailer wheel -> fishtail
+      const Flat = -gT*fadeT*Math.tanh(KT*aT);              // trailer lateral tyre force (signed)
+      // that force, in world, reacts on the car at the hitch (the "yank")
+      const Ftx=-Flat*sph, Fty=Flat*cph;
+      const yX=COUPLE*Ftx, yY=COUPLE*Fty;
+      const yankBX = yX*cth + yY*sth, yankBY = -yX*sth + yY*cth;   // -> car body frame
+      const yankTau = d*(sth*yX - cth*yY);                  // r_hitch x F  (r=-d*heading)
 
-      // slip angles (low-speed guard + lateral fade to avoid crawl jitter)
+      // --- car longitudinal + lateral tyres ---
+      let Fx = throttle*DRIVE - reverse*REV;
+      Fx -= braking*BRAKE*Math.tanh(u*0.4);                 // brake opposes forward motion
+      Fx -= DRAG_L*u + ROLL_L*Math.tanh(u*3);               // viscous + coulomb resistance
       const sp = Math.hypot(u,w), den = Math.max(sp,3), su = u>=0?1:-1;
-      const latFade = Math.min(1, sp/3);                     // only fade lateral grip at a crawl (avoids jitter)
+      const latFade = Math.min(1, sp/3);                    // fade lateral grip at a crawl (avoids jitter)
       const af = Math.atan2(w + LF*om, den) - st.delta*su;
       const ar = Math.atan2(w - LR*om, den);
-      // RWD friction circle: commanded drive/brake effort eats rear lateral grip,
-      // so flooring it (or braking) breaks the tail loose -> easy power-oversteer drift
       const tract = throttle*DRIVE + braking*BRAKE + reverse*REV;
-      const gl = Math.min(1, tract*REAR_LONG/GRIP_R);
+      const gl = Math.min(1, tract*REAR_LONG/GRIP_R);       // RWD friction circle: drive/brake eats rear grip
       const grR = GRIP_R*Math.sqrt(Math.max(0.15, 1 - gl*gl));
       const Fyf = -GRIP_F*latFade*Math.tanh(KSTIFF*af);
       const Fyr = -grR   *latFade*Math.tanh(KSTIFF*ar);
 
-      // body-frame accelerations
-      const ax = Fx - Fyf*Math.sin(st.delta) + w*om;
-      const ay = Fyf*Math.cos(st.delta) + Fyr - u*om;
-      const omdot = (LF*Fyf*Math.cos(st.delta) - LR*Fyr)/IZ - YAW_DAMP*om;
+      const ax = Fx - Fyf*Math.sin(st.delta) + w*om + yankBX;
+      const ay = Fyf*Math.cos(st.delta) + Fyr - u*om + yankBY;
+      const omdot = (LF*Fyf*Math.cos(st.delta) - LR*Fyr + yankTau)/IZ - YAW_DAMP*om;
       u = clamp(u + ax*h, -MAX_SPEED, MAX_SPEED);
       w += ay*h; om += omdot*h;
 
       st.theta += om*h;
       const c2=Math.cos(st.theta), s2=Math.sin(st.theta);
-      const wvx = u*c2 - w*s2, wvy = u*s2 + w*c2;            // COG world velocity
+      const wvx = u*c2 - w*s2, wvy = u*s2 + w*c2;
       cogx += wvx*h; cogy += wvy*h;
       st.v=u; st.vlat=w; st.omega=om;
-      st.x = cogx - LR*c2; st.y = cogy - LR*s2;              // back to rear-axle reference
+      st.x = cogx - LR*c2; st.y = cogy - LR*s2;             // back to rear-axle reference
 
-      // trailer: dynamic single axle with its own slip tyre. Grips at parking speed
-      // (~old kinematic feel) but can lose traction and fishtail; braking locks the
-      // trailer wheel (less grip) so it drifts on the brakes.
-      const d = LR + hitchC;
-      const Vhx = wvx + om*d*s2, Vhy = wvy - om*d*c2;        // hitch world velocity
-      const cph=Math.cos(st.phi), sph=Math.sin(st.phi);
-      // trailer wheel velocity = hitch vel + omegaT x (wheel - hitch),  wheel = hitch - draw_d*heading
-      const twx = Vhx + st.omegaT*draw_d*sph;
-      const twy = Vhy - st.omegaT*draw_d*cph;
-      const vFwdT = twx*cph + twy*sph, vLatT = -twx*sph + twy*cph;
-      const fadeT = Math.min(1, Math.hypot(vFwdT,vLatT)/3);
-      const aT = Math.atan2(vLatT, Math.max(Math.abs(vFwdT), 3));
-      const gT = GRIP_T*(braking ? TBRAKE_GRIP : 1);        // brakes lock the wheel -> drift
-      const Flat = -gT*fadeT*Math.tanh(KT*aT);              // lateral tyre force (opposes slip)
-      const omTdot = (-draw_d*Flat)/IT - DAMP_T*(st.omegaT - om);  // torque + damping toward co-rotation
+      // --- integrate the trailer (torque about hitch + damping toward co-rotation) ---
+      const omTdot = (-draw_d*Flat)/IT - DAMP_T*(st.omegaT - om);
       st.omegaT += omTdot*h;
       st.phi += st.omegaT*h;
       const rel=norm(st.theta-st.phi);
       if(rel> MAX_ARTIC){ st.phi=st.theta-MAX_ARTIC; st.omegaT=om; }
       if(rel<-MAX_ARTIC){ st.phi=st.theta+MAX_ARTIC; st.omegaT=om; }
+
+      st._ar=Math.abs(ar); st._gl=gl; st._aT=Math.abs(aT);  // slip metrics for skidmarks
     }
 
     // highscore tracking: rear-axle distance (integral of |v|), and time from first motion until cleared
@@ -522,9 +524,9 @@ import { createScene } from './render3d.js';
     if(coneNow&&!wasCone) faults++;
     wasCone=coneNow; hitCone=coneNow;
 
-    // hit a wall, or folded too far -> rewind
+    // hit a wall -> rewind. A jackknife no longer kills the run: the trailer just
+    // yanks the car around (two-way coupling above), so a fold throws you instead.
     if(hitWall){ triggerDead("wall"); return; }
-    if(Math.abs(norm(st.theta-st.phi)) >= JACK_TRIGGER){ triggerDead("jack"); return; }
 
     fitNow=checkFit(cb,tb);
     inPosition = fitNow && Math.abs(st.v)<5 && !hitWall;
