@@ -2,8 +2,6 @@ import { createScene } from './render3d.js';
 
 (() => {
   "use strict";
-  const VW = 960, VH = 600, SVGNS = "http://www.w3.org/2000/svg";
-
   // ---- vehicle geometry (world units = px) ----
   const L=56, carRearOv=14, carFrontOv=16, carW=30, carTrack=26;
   const hitchC=18, draw_d=76, trailerW=30, trailerTrack=26;
@@ -156,14 +154,6 @@ import { createScene } from './render3d.js';
   const norm = a => Math.atan2(Math.sin(a), Math.cos(a));
   const clamp = (v,a,b) => v<a?a:(v>b?b:v);
   const $ = id => document.getElementById(id);
-  const el = (tag,attrs) => { const e=document.createElementNS(SVGNS,tag); for(const k in attrs) e.setAttribute(k,attrs[k]); return e; };
-  function coneEl(x,y,r,hit){
-    const g=el("g",{});
-    g.appendChild(el("circle",{cx:x+r*0.16,cy:y+r*0.22,r:r*0.98,fill:"rgba(0,0,0,.32)"}));                                         // drop shadow, down-right
-    g.appendChild(el("circle",{cx:x,cy:y,r:r,fill:hit?"url(#coneHit)":"url(#coneGrad)",stroke:hit?"#3a3f45":"#6e360b","stroke-width":1.2})); // cone body
-    g.appendChild(el("circle",{cx:x,cy:y,r:r*0.55,fill:"none",stroke:"#f6e7d3","stroke-width":Math.max(2.2,r*0.3),opacity:.95}));   // reflective band
-    return g;
-  }
 
   // OKLab interpolation for the steering bar (cyan -> amber -> red as you near full lock)
   const _s2l = c => c<=0.04045 ? c/12.92 : Math.pow((c+0.055)/1.055,2.4);
@@ -278,22 +268,6 @@ import { createScene } from './render3d.js';
     const h=$("lockHint");
     if(h) h.textContent = locked ? "mouse captured · Esc to release" : "click the view to capture the mouse";
   });
-
-  function buildGeometry(){
-    const cb=$("cbody"); cb.setAttribute("x",-carRearOv); cb.setAttribute("y",-carW/2);
-    cb.setAttribute("width",L+carRearOv+carFrontOv); cb.setAttribute("height",carW);
-    const cw=$("cwindow"); cw.setAttribute("x",L*0.30); cw.setAttribute("y",-carW/2+5);
-    cw.setAttribute("width",L*0.42); cw.setAttribute("height",carW-10);
-    const setW=(e,cx,cy)=>{e.setAttribute("x",cx-wheelL/2);e.setAttribute("y",cy-wheelW/2);
-      e.setAttribute("width",wheelL);e.setAttribute("height",wheelW);e.setAttribute("rx",2);};
-    setW($("rwL"),0,-carTrack/2); setW($("rwR"),0,carTrack/2);
-    const setFW=(g,cy)=>{const r=g.firstElementChild;r.setAttribute("x",-wheelL/2);r.setAttribute("y",-wheelW/2);
-      r.setAttribute("width",wheelL);r.setAttribute("height",wheelW);r.setAttribute("rx",2);g.dataset.cy=cy;};
-    setFW($("fwL"),-carTrack/2); setFW($("fwR"),carTrack/2);
-    const tb=$("tbox"); tb.setAttribute("x",-boxBack); tb.setAttribute("y",-trailerW/2);
-    tb.setAttribute("width",boxBack-boxFront); tb.setAttribute("height",trailerW);
-    setW($("twheelL"),-draw_d,-trailerTrack/2); setW($("twheelR"),-draw_d,trailerTrack/2);
-  }
 
   function bayDims(b){ const d=BAY[b.fit]; return {hl:b.hl||d.hl, hw:b.hw||d.hw}; }
 
@@ -619,7 +593,6 @@ import { createScene } from './render3d.js';
   function closeNameModal(){ naming=false; $("nameModal").classList.remove("show"); }
   function pushTrail(a,x,y){ const l=a[a.length-1]; if(l&&(l[0]-x)**2+(l[1]-y)**2<TRAIL_MIN*TRAIL_MIN)return;
     a.push([x,y]); if(a.length>TRAIL_MAX)a.shift(); }
-  const toPts=a=>a.map(p=>p[0].toFixed(1)+","+p[1].toFixed(1)).join(" ");
 
   function refreshLevelUI(){
     $("goal").textContent=level.goal;
