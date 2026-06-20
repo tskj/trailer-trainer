@@ -24,7 +24,10 @@ import { createScene } from './render3d.js';
   const DRIVE_FORCE=250, REV_FORCE=155, DRAG=1.6, ROLL=10;
   const MAX_FWD=155, MAX_REV=62;
   // ---- steering: no auto-centre, so a set turn radius is held ----
-  const MAX_STEER=36*Math.PI/180, STEER_RATE=0.85, CENTRE_SNAP=0.026;
+  const MAX_STEER=36*Math.PI/180;
+  // keyboard steering mirrors the throttle: force + viscous drag + coulomb return,
+  // so tapping nudges the wheel and it eases back to centre (mouse still set-and-holds)
+  const STEER_FORCE=1.2, STEER_DRAG=1.6, STEER_ROLL=0.05;
 
   // ---- rewind double-buffer ----
   const SAMPLE_INTERVAL=1.5, DEAD_TIME=1.0;
@@ -130,7 +133,7 @@ import { createScene } from './render3d.js';
 
   // ---- state ----
   let st, cam, level, levelIdx, holdT, levelDone, faults, wasCone, hitWall, hitCone, inPosition, fitNow;
-  let dead, deadT, sampleT, snaps, locked=false, camRot=0, thrDisp=0, teleported=false;
+  let dead, deadT, sampleT, snaps, locked=false, camRot=0, thrDisp=0, teleported=false, mouseSteer=false;
   let rotateFollow=true;
   let runPath=0, runTime=0, runMoving=false, naming=false, pending=null, myEntry=null;
   const completed = new Set();
@@ -245,6 +248,7 @@ import { createScene } from './render3d.js';
   const stageEl = document.querySelector(".stage");
   stageEl.addEventListener("mousemove", e=>{
     if(!st) return;
+    mouseSteer = true;                          // mouse now owns the wheel; suppress keyboard centre-snap
     const r = stageEl.getBoundingClientRect();
     if(locked){
       // match the non-captured feel: full lock == moving across half the view width
@@ -377,10 +381,16 @@ import { createScene } from './render3d.js';
     const cr=ROLL*dt; if(st.v>cr) st.v-=cr; else if(st.v<-cr) st.v+=cr; else st.v=0;
     st.v = clamp(st.v, -MAX_REV, MAX_FWD);
 
-    // steering (holds angle, no auto-centre)
-    if(isLeft()) st.delta -= STEER_RATE*dt;
-    else if(isRight()) st.delta += STEER_RATE*dt;
-    else if(Math.abs(st.delta) < CENTRE_SNAP) st.delta = 0;
+    // steering. The mouse owns the wheel and HOLDS any angle (set-and-hold).
+    // Keyboard mirrors the throttle (force + viscous drag + coulomb return) so it
+    // taps like acc/rev and eases back toward centre on release.
+    if(isLeft()||isRight()) mouseSteer=false;          // keyboard reclaims the wheel
+    if(!mouseSteer){
+      let sf=0; if(isLeft()) sf-=STEER_FORCE; if(isRight()) sf+=STEER_FORCE;
+      st.delta += sf*dt;
+      st.delta -= STEER_DRAG*st.delta*dt;
+      const sr=STEER_ROLL*dt; if(st.delta>sr) st.delta-=sr; else if(st.delta<-sr) st.delta+=sr; else st.delta=0;
+    }
     st.delta = clamp(st.delta, -MAX_STEER, MAX_STEER);
 
     // kinematic bicycle + linked trailer
