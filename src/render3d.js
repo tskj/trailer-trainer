@@ -233,9 +233,9 @@ export function createScene(canvas, G) {
     if (view.rotateFollow) {
       const thS = -Math.PI / 2 - view.camRot;        // recover smoothed heading from camRot
       const fx = Math.cos(thS), fz = Math.sin(thS);
-      camera.position.set(view.camX - fx * 165, 350, view.camY - fz * 165);
+      camera.position.set(view.camX - fx * 120, 440, view.camY - fz * 120);   // higher + closer = steeper look-down
       camera.up.set(0, 1, 0);
-      camera.lookAt(view.camX + fx * 45, 6, view.camY + fz * 45);
+      camera.lookAt(view.camX + fx * 8, 4, view.camY + fz * 8);                // centre near the rig -> more of behind in view
     } else {
       camera.position.set(view.camX, 620, view.camY + 0.001);
       camera.up.set(0, 0, -1);

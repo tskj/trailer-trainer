@@ -246,19 +246,20 @@ import { createScene } from './render3d.js';
       actx = actx || new (window.AudioContext||window.webkitAudioContext)();
       if(actx.state==="suspended") actx.resume();
       const master=actx.createGain(); master.gain.value=0.0; master.connect(actx.destination);
-      // heavy waveshaper for V8 grit: soft-clip everything through it
+      // gentle waveshaper for V8 grit (soft-clip, not a hard clip)
       const shaper=actx.createWaveShaper(); shaper.oversample="4x";
-      { const n=1024, c=new Float32Array(n), k=5.0; for(let i=0;i<n;i++){ const x=i/(n-1)*2-1; c[i]=Math.tanh(k*x); } shaper.curve=c; }
+      { const n=1024, c=new Float32Array(n), k=2.4; for(let i=0;i<n;i++){ const x=i/(n-1)*2-1; c[i]=Math.tanh(k*x); } shaper.curve=c; }
       shaper.connect(master);
-      // V8 lope: an LFO at the firing rate amplitude-modulates the bus into a pulse
-      // train (the lopey "blat-blat-blat" rumble), on top of a base level.
-      const bus=actx.createGain(); bus.gain.value=0.55; bus.connect(shaper);
-      const lfo=actx.createOscillator(); lfo.type="sawtooth"; lfo.frequency.value=22;
-      const lfoGain=actx.createGain(); lfoGain.gain.value=0.5; lfo.connect(lfoGain); lfoGain.connect(bus.gain); lfo.start();
-      // 0.5x sub-octave for the deep rumble, then fundamental + a couple of harmonics
+      // V8 lope: a SMOOTH (triangle) LFO at the firing rate gently pulses the bus —
+      // sawtooth clicked every cycle; depth kept so the bus stays in (0,1), no clip.
+      const bus=actx.createGain(); bus.gain.value=0.5; bus.connect(shaper);
+      const lfo=actx.createOscillator(); lfo.type="triangle"; lfo.frequency.value=22;
+      const lfoGain=actx.createGain(); lfoGain.gain.value=0.28; lfo.connect(lfoGain); lfoGain.connect(bus.gain); lfo.start();
+      // 0.5x sub-octave for the deep rumble, then fundamental + a couple of harmonics.
+      // Gains kept low so the summed signal doesn't slam the shaper into hard clipping.
       const oscs=[0.5,1,2,3].map((mult,i)=>{
         const o=actx.createOscillator(); o.type=["triangle","sawtooth","square","triangle"][i]; o.frequency.value=22*mult;
-        const g=actx.createGain(); g.gain.value=[0.85,0.4,0.12,0.04][i];   // sub-heavy for rumble
+        const g=actx.createGain(); g.gain.value=[0.5,0.28,0.09,0.03][i];   // sub-heavy for rumble
         o.connect(g); g.connect(bus); o.start(); return {o,mult};
       });
       // looping noise -> low bandpass: the bulk of the "engine feel" per the talk
@@ -279,8 +280,8 @@ import { createScene } from './render3d.js';
     for(const {o,mult} of engine.oscs) o.frequency.setTargetAtTime(f0*mult, t, 0.06);
     engine.lfo.frequency.setTargetAtTime(Math.max(8, f0*0.55), t, 0.05);  // V8 lope/blat rate
     engine.nf.frequency.setTargetAtTime(80 + sp*0.9, t, 0.06);
-    engine.ng.gain.setTargetAtTime(0.26*(0.4+0.6*load), t, 0.08);
-    engine.master.gain.setTargetAtTime(0.05*(0.45+0.55*rev+0.4*load), t, 0.08);
+    engine.ng.gain.setTargetAtTime(0.2*(0.4+0.6*load), t, 0.08);
+    engine.master.gain.setTargetAtTime(0.06*(0.45+0.55*rev+0.4*load), t, 0.08);
   }
 
   // ---- input ----
