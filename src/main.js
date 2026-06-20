@@ -603,9 +603,17 @@ import { createScene } from './render3d.js';
     const trAxX=hitchX-draw_d*cp, trAxY=hitchY-draw_d*sp;
 
     let tx, ty;
-    if(rotateFollow){ const bk=52; tx=rs.x - bk*Math.cos(rs.theta); ty=rs.y - bk*Math.sin(rs.theta); } else { tx=(frontX+trAxX)/2; ty=(frontY+trAxY)/2; }
-    cam.x+=(tx-cam.x)*0.18; cam.y+=(ty-cam.y)*0.18;
-    if(rotateFollow) camRot += norm((-Math.PI/2 - rs.theta) - camRot)*0.2;
+    if(rotateFollow){
+      // focus a bit behind the car, led slightly by the actual velocity (incl. slides)
+      // so the camera drifts with the motion instead of being rigidly bolted on
+      const bk=52;
+      const wvx = st.v*Math.cos(rs.theta) - st.vlat*Math.sin(rs.theta);
+      const wvy = st.v*Math.sin(rs.theta) + st.vlat*Math.cos(rs.theta);
+      tx = rs.x - bk*Math.cos(rs.theta) + wvx*0.07;
+      ty = rs.y - bk*Math.sin(rs.theta) + wvy*0.07;
+    } else { tx=(frontX+trAxX)/2; ty=(frontY+trAxY)/2; }
+    cam.x+=(tx-cam.x)*0.11; cam.y+=(ty-cam.y)*0.11;        // looser follow -> the rig moves within the frame
+    if(rotateFollow) camRot += norm((-Math.PI/2 - rs.theta) - camRot)*0.075;  // rotation lags -> car visibly turns/slides in frame
 
     // trails: sample the interpolated wheel positions
     if(trailsOn && !dead){ pushTrail(trails.front,frontX,frontY); pushTrail(trails.rear,rs.x,rs.y); pushTrail(trails.trailer,trAxX,trAxY); }
