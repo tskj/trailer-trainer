@@ -127,7 +127,7 @@ import * as THREE from 'three';
 
   // ---- state ----
   let st, cam, level, levelIdx, holdT, levelDone, faults, wasCone, hitWall, hitCone, inPosition, fitNow;
-  let dead, deadT, sampleT, snaps, locked=false, camRot=0, thrDisp=0;
+  let dead, deadT, sampleT, snaps, locked=false, camRot=0, thrDisp=0, teleported=false;
   let rotateFollow=true;
   let runPath=0, runTime=0, runMoving=false, naming=false, pending=null, myEntry=null;
   const completed = new Set();
@@ -314,6 +314,7 @@ import * as THREE from 'three';
     trails.front.length=trails.rear.length=trails.trailer.length=0;
     cam={x:s.x,y:s.y}; camRot = -Math.PI/2 - st.theta;
     snaps=[snapshot()];   // always have at least one fallback
+    currState=prevState=captureState(); acc=0; teleported=false;   // reset interpolation
 
     const dyn=$("dyn"); dyn.replaceChildren();
     if(level.bay){
@@ -432,6 +433,7 @@ import * as THREE from 'three';
     dead=false; deadT=0;
     $("dead").classList.remove("show"); $("ring").classList.remove("on");
     holdT=0;
+    teleported=true;                   // snap render, don't interpolate across the jump
   }
 
   function step(dt){
@@ -526,18 +528,19 @@ import * as THREE from 'three';
     refreshLevelUI();
   }
 
-  function render(){
-    const c=Math.cos(st.theta), s=Math.sin(st.theta);
-    const hitchX=st.x-hitchC*c, hitchY=st.y-hitchC*s;
-    const frontX=st.x+L*c, frontY=st.y+L*s;
-    const cp=Math.cos(st.phi), sp=Math.sin(st.phi);
+  function render(prev, curr, alpha){
+    const rs = lerpState(prev, curr, alpha);            // interpolated render pose
+    const c=Math.cos(rs.theta), s=Math.sin(rs.theta);
+    const hitchX=rs.x-hitchC*c, hitchY=rs.y-hitchC*s;
+    const frontX=rs.x+L*c, frontY=rs.y+L*s;
+    const cp=Math.cos(rs.phi), sp=Math.sin(rs.phi);
     const trAxX=hitchX-draw_d*cp, trAxY=hitchY-draw_d*sp;
 
     let tx, ty;
-    if(rotateFollow){ const bk=52; tx=st.x - bk*Math.cos(st.theta); ty=st.y - bk*Math.sin(st.theta); } else { tx=(frontX+trAxX)/2; ty=(frontY+trAxY)/2; }
+    if(rotateFollow){ const bk=52; tx=rs.x - bk*Math.cos(rs.theta); ty=rs.y - bk*Math.sin(rs.theta); } else { tx=(frontX+trAxX)/2; ty=(frontY+trAxY)/2; }
     cam.x+=(tx-cam.x)*0.18; cam.y+=(ty-cam.y)*0.18;
     if(rotateFollow){
-      camRot += norm((-Math.PI/2 - st.theta) - camRot)*0.2;
+      camRot += norm((-Math.PI/2 - rs.theta) - camRot)*0.2;
       $("world").setAttribute("transform",`translate(${VW/2},${VH/2}) rotate(${camRot*180/Math.PI}) translate(${-cam.x},${-cam.y})`);
     } else {
       $("world").setAttribute("transform",`translate(${VW/2-cam.x},${VH/2-cam.y})`);
@@ -564,12 +567,13 @@ import * as THREE from 'three';
       }
     } else ga.style.display="none";
 
-    $("trailer").setAttribute("transform",`translate(${hitchX},${hitchY}) rotate(${st.phi*180/Math.PI})`);
+    $("trailer").setAttribute("transform",`translate(${hitchX},${hitchY}) rotate(${rs.phi*180/Math.PI})`);
     $("tongue").setAttribute("x2",-boxFront);
-    $("car").setAttribute("transform",`translate(${st.x},${st.y}) rotate(${st.theta*180/Math.PI})`);
-    const deg=st.delta*180/Math.PI;
-    $("fwL").setAttribute("transform",`translate(${L},${$("fwL").dataset.cy}) rotate(${deg})`);
-    $("fwR").setAttribute("transform",`translate(${L},${$("fwR").dataset.cy}) rotate(${deg})`);
+    $("car").setAttribute("transform",`translate(${rs.x},${rs.y}) rotate(${rs.theta*180/Math.PI})`);
+    const deg=st.delta*180/Math.PI;            // HUD steer readout uses live input
+    const wdeg=rs.delta*180/Math.PI;           // front-wheel visual uses interpolated pose
+    $("fwL").setAttribute("transform",`translate(${L},${$("fwL").dataset.cy}) rotate(${wdeg})`);
+    $("fwR").setAttribute("transform",`translate(${L},${$("fwR").dataset.cy}) rotate(${wdeg})`);
     $("hitchDot").setAttribute("cx",-hitchC);
 
     if(trailsOn && !dead){ pushTrail(trails.front,frontX,frontY); pushTrail(trails.rear,st.x,st.y); pushTrail(trails.trailer,trAxX,trAxY); }
@@ -705,8 +709,38 @@ import * as THREE from 'three';
     e.stopPropagation();
   });
 
-  let last=performance.now();
-  function frame(now){ let dt=(now-last)/1000; last=now; dt=Math.min(dt,0.05); if(!naming) step(dt); render(); requestAnimationFrame(frame); }
+  // ---- fixed-timestep loop (droste-style accumulator + interpolation) ----
+  // The sim advances in fixed TICK steps, decoupled from render FPS. Render draws
+  // an interpolated pose between the two most recent ticks (by `alpha`), so motion
+  // is smooth and deterministic at any frame rate. Teleports (respawn / level load)
+  // snap instead of interpolating, to avoid streaking across the jump.
+  const TICK = 1/120, MAX_STEPS_PER_FRAME = 8;
+  const lerpN  = (a,b,t)=> a + (b-a)*t;
+  const lerpAng= (a,b,t)=> a + norm(b-a)*t;          // shortest-arc angle interpolation
+  function captureState(){ return {x:st.x,y:st.y,theta:st.theta,phi:st.phi,delta:st.delta,v:st.v}; }
+  function lerpState(p,c,t){ return {
+    x:lerpN(p.x,c.x,t), y:lerpN(p.y,c.y,t),
+    theta:lerpAng(p.theta,c.theta,t), phi:lerpAng(p.phi,c.phi,t),
+    delta:lerpN(p.delta,c.delta,t), v:c.v }; }
+
+  let prevState=null, currState=null, acc=0, last=performance.now();
+  function frame(now){
+    let dt=(now-last)/1000; last=now;
+    dt=Math.min(dt,0.25);                              // ignore huge gaps (tab was backgrounded)
+    if(naming){ acc=0; render(currState,currState,0); requestAnimationFrame(frame); return; }
+    acc+=dt;
+    let steps=0;
+    while(acc>=TICK){
+      prevState=currState;
+      step(TICK);
+      currState=captureState();
+      acc-=TICK;
+      if(teleported){ prevState=currState; acc=0; teleported=false; }
+      if(++steps>=MAX_STEPS_PER_FRAME){ acc=0; break; }   // spiral-of-death guard
+    }
+    render(prevState, currState, clamp(acc/TICK,0,1));
+    requestAnimationFrame(frame);
+  }
 
   buildGeometry();
   loadLevel(1);
