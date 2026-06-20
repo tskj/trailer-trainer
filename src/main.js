@@ -606,11 +606,11 @@ import { createScene } from './render3d.js';
     if(rotateFollow){
       // focus a bit behind the car, led slightly by the actual velocity (incl. slides)
       // so the camera drifts with the motion instead of being rigidly bolted on
-      const bk=52;
+      const bk=112;                                       // focus back near the trailer -> camera sits further behind it
       const wvx = st.v*Math.cos(rs.theta) - st.vlat*Math.sin(rs.theta);
       const wvy = st.v*Math.sin(rs.theta) + st.vlat*Math.cos(rs.theta);
-      tx = rs.x - bk*Math.cos(rs.theta) + wvx*0.10;
-      ty = rs.y - bk*Math.sin(rs.theta) + wvy*0.10;
+      tx = rs.x - bk*Math.cos(rs.theta) + wvx*0.08;
+      ty = rs.y - bk*Math.sin(rs.theta) + wvy*0.08;
     } else { tx=(frontX+trAxX)/2; ty=(frontY+trAxY)/2; }
     cam.x+=(tx-cam.x)*0.07; cam.y+=(ty-cam.y)*0.07;        // looser follow -> the rig moves within the frame
     if(rotateFollow) camRot += norm((-Math.PI/2 - rs.theta) - camRot)*0.048;  // rotation lags -> car visibly turns/slides in frame
