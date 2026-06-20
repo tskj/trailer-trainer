@@ -18,7 +18,7 @@ import * as THREE from 'three';
 const B = 8000;                       // "infinity" extent for half-plane / quad regions (matches sim)
 const WALL_H = 34;                    // raised-region / wall height
 const TRAIL_Y = 0.6;                  // trail ribbon height above ground
-const DISPLAY_FOV = 42;               // the framing the player sees
+const DISPLAY_FOV = 52;               // the framing the player sees
 const OVERSCAN = 1.12;                // render this much wider so the lens barrel can sample outward
 
 // ---- palette (sRGB hex; vibrant + cute) ----
@@ -201,9 +201,9 @@ export function createScene(canvas, G) {
     if (view.rotateFollow) {
       const thS = -Math.PI / 2 - view.camRot;        // recover smoothed heading from camRot
       const fx = Math.cos(thS), fz = Math.sin(thS);
-      camera.position.set(view.camX - fx * 235, 250, view.camY - fz * 235);
+      camera.position.set(view.camX - fx * 165, 350, view.camY - fz * 165);
       camera.up.set(0, 1, 0);
-      camera.lookAt(view.camX + fx * 70, 0, view.camY + fz * 70);
+      camera.lookAt(view.camX + fx * 45, 6, view.camY + fz * 45);
     } else {
       camera.position.set(view.camX, 620, view.camY + 0.001);
       camera.up.set(0, 0, -1);
