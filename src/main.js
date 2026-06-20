@@ -3,7 +3,7 @@ import { createScene } from './render3d.js';
 (() => {
   "use strict";
   // ---- vehicle geometry (world units = px) ----
-  const L=56, carRearOv=14, carFrontOv=16, carW=30, carTrack=26;
+  const L=44, carRearOv=10, carFrontOv=12, carW=30, carTrack=26;
   const hitchC=18, draw_d=76, trailerW=30, trailerTrack=26;
   const boxFront=22, boxBack=draw_d+20;
   const wheelL=14, wheelW=6;
