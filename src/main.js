@@ -21,12 +21,12 @@ import { createScene } from './render3d.js';
   const MAX_ARTIC    = 82*Math.PI/180;   // hard clamp (just beyond, as a backstop)
 
   // ---- engine / longitudinal (acceleration units, mass = 1; top speed ~ DRIVE/DRAG_L) ----
-  const DRIVE=300, REV=85, BRAKE=460, DRAG_L=1.25, ROLL_L=16;
-  const MAX_SPEED=300;                              // safety clamp
+  const DRIVE=400, REV=90, BRAKE=520, DRAG_L=1.05, ROLL_L=16;   // terminal ~380 (much faster)
+  const MAX_SPEED=440;                              // safety clamp
   // ---- tyres: lateral grip is a saturating slip-angle force (grip below the
   //      limit -> follows the heading like before; past it -> slides/drifts) ----
-  const GRIP_F=192, GRIP_R=150, KSTIFF=9.0;         // rear grips less -> tail steps out (oversteer)
-  const LR=L*0.45, LF=L-LR, IZ=300, YAW_DAMP=1.7;   // COG offsets, yaw inertia, spin damping (catchable drift)
+  const GRIP_F=190, GRIP_R=140, KSTIFF=9.0, REAR_LONG=0.27;  // REAR_LONG: throttle/brake eats rear grip (RWD power-oversteer)
+  const LR=L*0.45, LF=L-LR, IZ=360, YAW_DAMP=3.0;   // COG offsets, yaw inertia, spin damping (catchable drift)
   // ---- trailer tyre: grips at parking speed (~old kinematic feel), slides at the
   //      limit; braking locks its wheel so it fishtails on the brakes ----
   const GRIP_T=125, KT=8.0, IT=550, DAMP_T=4.5, TBRAKE_GRIP=0.3;
@@ -242,9 +242,10 @@ import { createScene } from './render3d.js';
       actx = actx || new (window.AudioContext||window.webkitAudioContext)();
       if(actx.state==="suspended") actx.resume();
       const master=actx.createGain(); master.gain.value=0.0; master.connect(actx.destination);
-      const oscs=[1,2,3].map((mult,i)=>{
-        const o=actx.createOscillator(); o.type=["sawtooth","square","triangle"][i]; o.frequency.value=35*mult;
-        const g=actx.createGain(); g.gain.value=[0.5,0.24,0.1][i];   // softer high harmonic
+      // 0.5x sub-octave for the deep rumble, then fundamental + a couple of harmonics
+      const oscs=[0.5,1,2,3].map((mult,i)=>{
+        const o=actx.createOscillator(); o.type=["triangle","sawtooth","square","triangle"][i]; o.frequency.value=30*mult;
+        const g=actx.createGain(); g.gain.value=[0.5,0.42,0.16,0.06][i];
         o.connect(g); g.connect(master); o.start(); return {o,mult};
       });
       // looping noise -> bandpass: the bulk of the "engine feel" per the talk
@@ -260,11 +261,10 @@ import { createScene } from './render3d.js';
   function updateEngine(speed, throttleAmt){
     if(!engine||!actx) return;
     const t=actx.currentTime, sp=Math.abs(speed), load=Math.min(1,Math.abs(throttleAmt)), rev=Math.min(1,sp/MAX_SPEED);
-    // low, growly firing frequency: gentle rise with speed (sqrt-compressed so the
-    // top end rumbles instead of screaming), small throttle blip
-    const f0=30 + Math.sqrt(sp)*3.3 + load*7;            // idle ~30Hz, max ~85Hz
+    // deep, growly firing frequency (sub-octave + sqrt-compressed top so it rumbles)
+    const f0=26 + Math.sqrt(sp)*2.5 + load*6;            // idle ~26Hz, max ~75Hz (sub at half)
     for(const {o,mult} of engine.oscs) o.frequency.setTargetAtTime(f0*mult, t, 0.06);
-    engine.nf.frequency.setTargetAtTime(150 + sp*1.8, t, 0.06);
+    engine.nf.frequency.setTargetAtTime(120 + sp*1.4, t, 0.06);
     engine.ng.gain.setTargetAtTime(0.2*(0.4+0.6*load), t, 0.08);
     engine.master.gain.setTargetAtTime(0.05*(0.45+0.55*rev+0.4*load), t, 0.08);
   }
@@ -455,9 +455,11 @@ import { createScene } from './render3d.js';
       const latFade = Math.min(1, sp/3);                     // only fade lateral grip at a crawl (avoids jitter)
       const af = Math.atan2(w + LF*om, den) - st.delta*su;
       const ar = Math.atan2(w - LR*om, den);
-      // rear friction circle: drive/brake eats into rear lateral grip -> power/brake oversteer
-      const gl = Math.min(1, Math.abs(Fx)/GRIP_R);
-      const grR = GRIP_R*Math.sqrt(Math.max(0, 1 - gl*gl));
+      // RWD friction circle: commanded drive/brake effort eats rear lateral grip,
+      // so flooring it (or braking) breaks the tail loose -> easy power-oversteer drift
+      const tract = throttle*DRIVE + braking*BRAKE + reverse*REV;
+      const gl = Math.min(1, tract*REAR_LONG/GRIP_R);
+      const grR = GRIP_R*Math.sqrt(Math.max(0.15, 1 - gl*gl));
       const Fyf = -GRIP_F*latFade*Math.tanh(KSTIFF*af);
       const Fyr = -grR   *latFade*Math.tanh(KSTIFF*ar);
 
