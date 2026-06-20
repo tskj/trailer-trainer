@@ -29,7 +29,7 @@ import { createScene } from './render3d.js';
   const LR=L*0.45, LF=L-LR, IZ=360, YAW_DAMP=3.0;   // COG offsets, yaw inertia, spin damping (catchable drift)
   // ---- trailer tyre: grips at parking speed (~old kinematic feel), slides at the
   //      limit; braking locks its wheel so it fishtails on the brakes ----
-  const GRIP_T=88, KT=8.0, IT=550, DAMP_T=4.5, TBRAKE_GRIP=0.22;
+  const GRIP_T=66, KT=8.0, IT=550, DAMP_T=2.6, TBRAKE_GRIP=0.22, TBRAKE_LOCK=0.05;
   const COUPLE=0.55;                                // how hard the trailer yanks the car back (two-way)
   // ---- steering: no auto-centre, so a set turn radius is held ----
   const MAX_STEER=36*Math.PI/180;
@@ -281,8 +281,9 @@ import { createScene } from './render3d.js';
   const isRev =()=>keys.has("ArrowDown")||keys.has("d")||keys.has("k");
   const isLeft=()=>keys.has("ArrowLeft")||keys.has("s")||keys.has("j");
   const isRight=()=>keys.has("ArrowRight")||keys.has("f")||keys.has("l");
-  const isBrake=()=>keys.has("Control");                         // Ctrl = brakes
-  const MOVE=["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","e","s","d","f","i","j","k","l","Control"];
+  const isBrake=()=>keys.has("Control");                         // Ctrl = car brakes
+  const isTBrake=()=>keys.has("Shift");                          // Shift = trailer brake (locks the trailer wheel -> swings it out)
+  const MOVE=["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","e","s","d","f","i","j","k","l","Control","Shift"];
   addEventListener("keydown", e=>{
     if(naming) return;
     const k = e.key.length===1 ? e.key.toLowerCase() : e.key;
@@ -427,7 +428,7 @@ import { createScene } from './render3d.js';
     if(dead){ deadT+=dt; if(deadT>=DEAD_TIME) respawn(); return; }
 
     // longitudinal + lateral dynamics are integrated in the substep loop below
-    const throttle = isFwd()?1:0, reverse = isRev()?1:0, braking = isBrake()?1:0;
+    const throttle = isFwd()?1:0, reverse = isRev()?1:0, braking = isBrake()?1:0, tbrake = isTBrake()?1:0;
 
     // steering. The mouse owns the wheel and HOLDS any angle (set-and-hold).
     // Keyboard mirrors the throttle (force + viscous drag + coulomb return) so it
@@ -460,7 +461,7 @@ import { createScene } from './render3d.js';
       const vFwdT = twx*cph + twy*sph, vLatT = -twx*sph + twy*cph;
       const fadeT = Math.min(1, Math.hypot(vFwdT,vLatT)/3);
       const aT = Math.atan2(vLatT, Math.max(Math.abs(vFwdT), 3));
-      const gT = GRIP_T*(braking ? TBRAKE_GRIP : 1);        // brakes lock the trailer wheel -> fishtail
+      const gT = GRIP_T*(tbrake ? TBRAKE_LOCK : (braking ? TBRAKE_GRIP : 1));   // trailer brake locks the wheel -> fishtail
       const Flat = -gT*fadeT*Math.tanh(KT*aT);              // trailer lateral tyre force (signed)
       // that force, in world, reacts on the car at the hitch (the "yank")
       const Ftx=-Flat*sph, Fty=Flat*cph;
@@ -503,7 +504,7 @@ import { createScene } from './render3d.js';
       if(rel> MAX_ARTIC){ st.phi=st.theta-MAX_ARTIC; st.omegaT=om; }
       if(rel<-MAX_ARTIC){ st.phi=st.theta+MAX_ARTIC; st.omegaT=om; }
 
-      st._ar=Math.abs(ar); st._gl=gl; st._aT=Math.abs(aT);  // slip metrics for skidmarks
+      st._ar=Math.abs(ar); st._gl=gl; st._aT=Math.abs(aT); st._tbrake=tbrake;  // slip metrics for skidmarks
     }
 
     // highscore tracking: rear-axle distance (integral of |v|), and time from first motion until cleared
@@ -596,7 +597,7 @@ import { createScene } from './render3d.js';
     // trailer wheels when it fishtails. (lateral dir = (-s,c) for car, (-sp,cp) for trailer)
     const htC=carTrack/2, htT=trailerTrack/2;
     const rearSkid  = !dead && (st._ar>0.18 || (st._gl>0.8 && Math.abs(st.v)>10));
-    const trailSkid = !dead && st._aT>0.2;
+    const trailSkid = !dead && (st._aT>0.2 || (st._tbrake && Math.abs(st.v)>8));
     R.updateSkids([
       {key:'rl', x:rs.x - s*htC,  y:rs.y + c*htC,  on:rearSkid},
       {key:'rr', x:rs.x + s*htC,  y:rs.y - c*htC,  on:rearSkid},
