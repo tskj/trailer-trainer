@@ -20,9 +20,13 @@ import { createScene } from './render3d.js';
   const JACK_TRIGGER = 72*Math.PI/180;   // fold this far -> game over
   const MAX_ARTIC    = 82*Math.PI/180;   // hard clamp (just beyond, as a backstop)
 
-  // ---- throttle: force + viscous drag = a PWM low-pass filter ----
-  const DRIVE_FORCE=250, REV_FORCE=155, DRAG=1.6, ROLL=10;
-  const MAX_FWD=155, MAX_REV=62;
+  // ---- engine / longitudinal (acceleration units, mass = 1; top speed ~ DRIVE/DRAG_L) ----
+  const DRIVE=300, REV=85, BRAKE=460, DRAG_L=1.25, ROLL_L=16;
+  const MAX_SPEED=300;                              // safety clamp
+  // ---- tyres: lateral grip is a saturating slip-angle force (grip below the
+  //      limit -> follows the heading like before; past it -> slides/drifts) ----
+  const GRIP_F=192, GRIP_R=150, KSTIFF=9.0;         // rear grips less -> tail steps out (oversteer)
+  const LR=L*0.45, LF=L-LR, IZ=300, YAW_DAMP=1.7;   // COG offsets, yaw inertia, spin damping (catchable drift)
   // ---- steering: no auto-centre, so a set turn radius is held ----
   const MAX_STEER=36*Math.PI/180;
   // keyboard steering mirrors the throttle: force + viscous drag + coulomb return,
@@ -227,16 +231,51 @@ import { createScene } from './render3d.js';
       });
     }catch(e){}
   }
+  // ---- procedural engine sound (talk-style: RPM-driven harmonics + noise) ----
+  let engine=null;
+  function ensureEngine(){
+    if(engine) return;
+    try{
+      actx = actx || new (window.AudioContext||window.webkitAudioContext)();
+      if(actx.state==="suspended") actx.resume();
+      const master=actx.createGain(); master.gain.value=0.0; master.connect(actx.destination);
+      const oscs=[1,2,3.5].map((mult,i)=>{
+        const o=actx.createOscillator(); o.type=i===0?"sawtooth":"square"; o.frequency.value=50*mult;
+        const g=actx.createGain(); g.gain.value=[0.5,0.28,0.14][i];
+        o.connect(g); g.connect(master); o.start(); return {o,mult};
+      });
+      // looping noise -> bandpass: the bulk of the "engine feel" per the talk
+      const buf=actx.createBuffer(1,actx.sampleRate,actx.sampleRate), d=buf.getChannelData(0);
+      for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+      const noise=actx.createBufferSource(); noise.buffer=buf; noise.loop=true;
+      const nf=actx.createBiquadFilter(); nf.type="bandpass"; nf.frequency.value=350; nf.Q.value=0.6;
+      const ng=actx.createGain(); ng.gain.value=0.0;
+      noise.connect(nf); nf.connect(ng); ng.connect(master); noise.start();
+      engine={master,oscs,nf,ng};
+    }catch(e){ engine=null; }
+  }
+  function updateEngine(speed, throttleAmt){
+    if(!engine||!actx) return;
+    const t=actx.currentTime, sp=Math.abs(speed), load=Math.min(1,Math.abs(throttleAmt)), rev=Math.min(1,sp/MAX_SPEED);
+    const f0=46 + sp*1.5 + load*22;                      // base firing frequency from "rpm"
+    for(const {o,mult} of engine.oscs) o.frequency.setTargetAtTime(f0*mult, t, 0.06);
+    engine.nf.frequency.setTargetAtTime(280 + sp*7, t, 0.06);
+    engine.ng.gain.setTargetAtTime(0.2*(0.35+0.65*load), t, 0.08);
+    engine.master.gain.setTargetAtTime(0.045*(0.4+0.6*rev+0.5*load), t, 0.08);
+  }
+
   // ---- input ----
   const keys = new Set();
   const isFwd =()=>keys.has("ArrowUp")||keys.has("e")||keys.has("i");
   const isRev =()=>keys.has("ArrowDown")||keys.has("d")||keys.has("k");
   const isLeft=()=>keys.has("ArrowLeft")||keys.has("s")||keys.has("j");
   const isRight=()=>keys.has("ArrowRight")||keys.has("f")||keys.has("l");
-  const MOVE=["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","e","s","d","f","i","j","k","l"];
+  const isBrake=()=>keys.has("Control");                         // Ctrl = brakes
+  const MOVE=["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","e","s","d","f","i","j","k","l","Control"];
   addEventListener("keydown", e=>{
     if(naming) return;
     const k = e.key.length===1 ? e.key.toLowerCase() : e.key;
+    ensureEngine();                                              // first key starts the engine audio
     if(k==="r"){ loadLevel(levelIdx); return; }
     if(k==="n"||k===" "){ if(levelDone||level.id==="free") nextLevel(); e.preventDefault(); return; }
     if(MOVE.includes(k)){ keys.add(k); e.preventDefault(); }
@@ -261,6 +300,7 @@ import { createScene } from './render3d.js';
   });
   stageEl.addEventListener("click", e=>{
     if(e.target.id!=="gl") return;                       // only capture on the canvas, not overlay buttons
+    ensureEngine();
     if(document.pointerLockElement!==stageEl && stageEl.requestPointerLock){
       try{ stageEl.requestPointerLock(); }catch(_){}
     }
@@ -277,7 +317,7 @@ import { createScene } from './render3d.js';
   function snapshot(){ return {x:st.x,y:st.y,theta:st.theta,phi:st.phi,delta:st.delta,
     tf:trails.front.length,tr:trails.rear.length,tt:trails.trailer.length}; }
   function restore(s){
-    st.x=s.x; st.y=s.y; st.theta=s.theta; st.phi=s.phi; st.delta=s.delta; st.v=0;
+    st.x=s.x; st.y=s.y; st.theta=s.theta; st.phi=s.phi; st.delta=s.delta; st.v=0; st.vlat=0; st.omega=0;
     trails.front.length=Math.min(trails.front.length,s.tf);
     trails.rear.length =Math.min(trails.rear.length, s.tr);
     trails.trailer.length=Math.min(trails.trailer.length,s.tt);
@@ -286,7 +326,7 @@ import { createScene } from './render3d.js';
   function loadLevel(i){
     levelIdx=i; level=LEVELS[i];
     const s=level.start;
-    st={x:s.x,y:s.y,theta:s.th,phi:s.th,delta:0,v:0};
+    st={x:s.x,y:s.y,theta:s.th,phi:s.th,delta:0,v:0,vlat:0,omega:0};
     if(level.perturb){ const sgn=Math.random()<0.5?-1:1; st.phi = s.th + sgn*(level.perturb + Math.random()*0.06); }
     if(level.lateral){ const sgn=Math.random()<0.5?-1:1, d=sgn*level.lateral*(0.55+Math.random()*0.45);
       st.x += -Math.sin(s.th)*d; st.y += Math.cos(s.th)*d; }
@@ -375,11 +415,8 @@ import { createScene } from './render3d.js';
   function step(dt){
     if(dead){ deadT+=dt; if(deadT>=DEAD_TIME) respawn(); return; }
 
-    // throttle (PWM via force + viscous drag)
-    let f=0; if(isFwd()) f+=DRIVE_FORCE; if(isRev()) f-=REV_FORCE;
-    st.v += f*dt; st.v -= DRAG*st.v*dt;
-    const cr=ROLL*dt; if(st.v>cr) st.v-=cr; else if(st.v<-cr) st.v+=cr; else st.v=0;
-    st.v = clamp(st.v, -MAX_REV, MAX_FWD);
+    // longitudinal + lateral dynamics are integrated in the substep loop below
+    const throttle = isFwd()?1:0, reverse = isRev()?1:0, braking = isBrake()?1:0;
 
     // steering. The mouse owns the wheel and HOLDS any angle (set-and-hold).
     // Keyboard mirrors the throttle (force + viscous drag + coulomb return) so it
@@ -393,14 +430,52 @@ import { createScene } from './render3d.js';
     }
     st.delta = clamp(st.delta, -MAX_STEER, MAX_STEER);
 
-    // kinematic bicycle + linked trailer
+    // dynamic single-track model: longitudinal drive/brake + saturating lateral
+    // tyres. Below the grip limit the car tracks its heading (like the old
+    // kinematic model); past it, it slides. The trailer follows the *actual* hitch
+    // velocity, so it swings out when the car slides (kinematic, no own slip yet).
     const nsub=Math.max(1,Math.ceil(dt/(1/240))), h=dt/nsub;
     for(let i=0;i<nsub;i++){
-      const v=st.v;
-      const dth=(v/L)*Math.tan(st.delta);
-      const dph=(v*Math.sin(st.theta-st.phi)-hitchC*dth*Math.cos(st.theta-st.phi))/draw_d;
-      st.x+=v*Math.cos(st.theta)*h; st.y+=v*Math.sin(st.theta)*h;
-      st.theta+=dth*h; st.phi+=dph*h;
+      const cth=Math.cos(st.theta), sth=Math.sin(st.theta);
+      let u=st.v, w=st.vlat, om=st.omega;
+      let cogx = st.x + LR*cth, cogy = st.y + LR*sth;        // COG = rear axle + LR forward
+
+      // longitudinal force (acceleration units, mass = 1)
+      let Fx = throttle*DRIVE - reverse*REV;
+      Fx -= braking*BRAKE*Math.tanh(u*0.4);                  // brake opposes forward motion
+      Fx -= DRAG_L*u + ROLL_L*Math.tanh(u*3);                // viscous + coulomb resistance
+
+      // slip angles (low-speed guard + lateral fade to avoid crawl jitter)
+      const sp = Math.hypot(u,w), den = Math.max(sp,3), su = u>=0?1:-1;
+      const latFade = Math.min(1, sp/3);                     // only fade lateral grip at a crawl (avoids jitter)
+      const af = Math.atan2(w + LF*om, den) - st.delta*su;
+      const ar = Math.atan2(w - LR*om, den);
+      // rear friction circle: drive/brake eats into rear lateral grip -> power/brake oversteer
+      const gl = Math.min(1, Math.abs(Fx)/GRIP_R);
+      const grR = GRIP_R*Math.sqrt(Math.max(0, 1 - gl*gl));
+      const Fyf = -GRIP_F*latFade*Math.tanh(KSTIFF*af);
+      const Fyr = -grR   *latFade*Math.tanh(KSTIFF*ar);
+
+      // body-frame accelerations
+      const ax = Fx - Fyf*Math.sin(st.delta) + w*om;
+      const ay = Fyf*Math.cos(st.delta) + Fyr - u*om;
+      const omdot = (LF*Fyf*Math.cos(st.delta) - LR*Fyr)/IZ - YAW_DAMP*om;
+      u = clamp(u + ax*h, -MAX_SPEED, MAX_SPEED);
+      w += ay*h; om += omdot*h;
+
+      st.theta += om*h;
+      const c2=Math.cos(st.theta), s2=Math.sin(st.theta);
+      const wvx = u*c2 - w*s2, wvy = u*s2 + w*c2;            // COG world velocity
+      cogx += wvx*h; cogy += wvy*h;
+      st.v=u; st.vlat=w; st.omega=om;
+      st.x = cogx - LR*c2; st.y = cogy - LR*s2;              // back to rear-axle reference
+
+      // trailer: kinematic, driven by the real hitch velocity (identical to the old
+      // constraint in pure fwd/rev; swings naturally when the hitch moves sideways)
+      const d = LR + hitchC;
+      const Vhx = wvx + om*d*s2, Vhy = wvy - om*d*c2;        // hitch world velocity
+      const dph = (Vhy*Math.cos(st.phi) - Vhx*Math.sin(st.phi))/draw_d;
+      st.phi += dph*h;
       const rel=norm(st.theta-st.phi);
       if(rel> MAX_ARTIC) st.phi=st.theta-MAX_ARTIC;
       if(rel<-MAX_ARTIC) st.phi=st.theta+MAX_ARTIC;
@@ -520,11 +595,13 @@ import { createScene } from './render3d.js';
     fill.style.transform=frac<0?"translateX(-100%)":"none";
     fill.style.background=near?"var(--warn)":"var(--cyan)";
 
+    const drifting = Math.abs(st.vlat) > 6;
     const status=$("status");
     if(dead){ status.textContent="REWINDING"; status.className="status warn"; }
     else if(levelDone){ status.textContent="CLEAR"; status.className="status good"; }
     else if(near){ status.textContent="EASE OFF"; status.className="status warn"; }
     else if(hitWall){ status.textContent="CONTACT"; status.className="status warn"; }
+    else if(drifting){ status.textContent="DRIFTING"; status.className="status warn"; }
     else if(inPosition){ status.textContent="IN POSITION"; status.className="status good"; }
     else { status.textContent = st.v<-1?"REVERSING":(st.v>1?"DRIVING":"READY"); status.className="status"; }
     $("faults").textContent="faults: "+faults;
@@ -555,6 +632,7 @@ import { createScene } from './render3d.js';
     if(thrDisp>=0){ tf.style.top=(50-50*thrDisp)+"%"; tf.style.height=(50*thrDisp)+"%"; tf.style.background="var(--good)"; }
     else { tf.style.top="50%"; tf.style.height=(50*-thrDisp)+"%"; tf.style.background="var(--warn)"; }
 
+    updateEngine(st.v, thrDisp);
     updateRunLine();
   }
   const fmtDist=d=>Math.round(d).toString();
@@ -668,4 +746,7 @@ import { createScene } from './render3d.js';
   R.resize();
   loadLevel(1);
   requestAnimationFrame(frame);
+
+  // debug telemetry hook (read by test scripts)
+  window.__tt = () => ({ v:st.v, vlat:st.vlat, om:st.omega, delta:st.delta, theta:st.theta, phi:st.phi });
 })();
