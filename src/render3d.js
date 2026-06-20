@@ -1,0 +1,460 @@
+import * as THREE from 'three';
+
+// ---------------------------------------------------------------------------
+// 3D renderer for Trailer Trainer.
+//
+// The sim stays 2D (x, y, theta, phi). We map it onto the ground plane as
+// world (x, y_up, z) = (sim.x, height, sim.y), heading = rotation.y = -theta.
+//
+// Lighting follows the droste recipe (../droste): a three-colored directional
+// rig (warm sun + cool sky fill + warm bounce) over a Cook-Torrance PBR
+// material (Three's MeshStandardMaterial is exactly that BRDF), a generated
+// gradient environment for reflections, soft shadow-mapped penumbra, and a
+// hand-written tonemap/grade post pass (exposure -> exponential tonemap ->
+// vignette) — tuned brighter and more saturated than droste's moody original
+// for a cute, vibrant low-poly look.
+// ---------------------------------------------------------------------------
+
+const B = 8000;                       // "infinity" extent for half-plane / quad regions (matches sim)
+const WALL_H = 34;                    // raised-region / wall height
+const TRAIL_Y = 0.6;                  // trail ribbon height above ground
+
+// ---- palette (sRGB hex; vibrant + cute) ----
+const COL = {
+  carBody:   '#ef5d60',  // coral red
+  carCabin:  '#c9484b',  // darker coral
+  glass:     '#27293d',
+  trailer:   '#3ec1b3',  // turquoise
+  trailerLid:'#2fa99d',
+  tongue:    '#5b6472',
+  wheel:     '#23233b',
+  hub:       '#3a3a55',
+  cone:      '#ff8c1a',
+  coneBand:  '#fff4e0',
+  coneHit:   '#7e8590',
+  ground:    '#7e8aa1',  // desaturated slate so colors pop
+  wall:      '#9aa6bd',
+  region:    '#6d7891',
+  bay:       '#f2c44d',
+  bayGood:   '#56d98a',
+};
+
+// ---- light rig (droste: 3 colored lights, none white) ----
+const SUN_DIR = new THREE.Vector3(0.55, 1.0, 0.42).normalize(); // warm key, upper-front-right
+const SKY_DIR = new THREE.Vector3(0.0, 1.0, 0.0);               // cool fill from straight up
+const BNC_DIR = new THREE.Vector3(-0.55, 0.18, -0.42).normalize(); // warm bounce, anti-sun low
+
+export function createScene(canvas, G) {
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
+  renderer.toneMapping = THREE.NoToneMapping;          // we tonemap ourselves in the post pass
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(42, 1, 1, 12000);
+
+  // ---- HDR target + hand-written grade pass ----
+  let rt = makeTarget(1, 1);
+  const post = makePost();
+  const quadScene = new THREE.Scene();
+  const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  quadScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), post.material));
+
+  // ---- environment + sky ----
+  const env = buildEnvironment(renderer);
+  scene.environment = env;
+  scene.add(makeSky());
+
+  // ---- lights ----
+  const sun = new THREE.DirectionalLight(new THREE.Color('#ffe0ad'), 2.7);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.bias = -0.0006;
+  sun.shadow.normalBias = 1.2;
+  const sc = sun.shadow.camera;
+  sc.near = 1; sc.far = 1400; sc.left = -260; sc.right = 260; sc.top = 260; sc.bottom = -260;
+  scene.add(sun, sun.target);
+
+  const sky = new THREE.DirectionalLight(new THREE.Color('#acccff'), 2.4);    // cool fill
+  sky.position.copy(SKY_DIR);
+  const bounce = new THREE.DirectionalLight(new THREE.Color('#ffb877'), 1.3);  // warm bounce
+  bounce.position.copy(BNC_DIR);
+  scene.add(sky, bounce);
+  scene.add(new THREE.AmbientLight(new THREE.Color('#aec4e2'), 1.15));
+
+  // ---- ground ----
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(24000, 24000),
+    new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.ground), roughness: 0.96, metalness: 0.0 })
+  );
+  ground.rotation.x = -Math.PI / 2;
+  ground.receiveShadow = true;
+  scene.add(ground);
+  scene.add(makeGrid());
+
+  // ---- persistent rig (car + trailer) ----
+  const car = buildCar(G);
+  const trailer = buildTrailer(G);
+  scene.add(car.group, trailer.group);
+
+  // ---- per-level dynamic content ----
+  const dyn = new THREE.Group();
+  scene.add(dyn);
+
+  // shared cone materials (swap on hit)
+  const coneMat    = new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.cone), roughness: 0.55, metalness: 0.0, flatShading: true });
+  const coneHitMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.coneHit), roughness: 0.85, metalness: 0.0, flatShading: true });
+  const bandMat    = new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.coneBand), roughness: 0.5, emissive: new THREE.Color('#3a2a10'), emissiveIntensity: 0.4 });
+  const wallMat    = new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.wall), roughness: 0.9, metalness: 0.0, flatShading: true });
+  const regionMat  = new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.region), roughness: 0.95, metalness: 0.0, flatShading: true });
+
+  // trails
+  const trailObjs = {
+    front:   makeTrail('#39c2d7'),
+    rear:    makeTrail('#f59f3b'),
+    trailer: makeTrail('#e8567c'),
+  };
+  scene.add(trailObjs.front, trailObjs.rear, trailObjs.trailer);
+
+  let bay = null;   // {group, frame:[mats], pad}
+
+  // ------------------------------------------------------------------ API
+  function resize() {
+    const w = canvas.clientWidth || canvas.width, h = canvas.clientHeight || canvas.height;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h; camera.updateProjectionMatrix();
+    const pr = renderer.getPixelRatio();
+    rt.setSize(Math.max(1, Math.floor(w * pr)), Math.max(1, Math.floor(h * pr)));
+    post.material.uniforms.uRes.value.set(w * pr, h * pr);
+  }
+
+  function buildLevel(level, bayDims) {
+    dyn.clear();
+    bay = null;
+    if (level.bay) bay = buildBay(level.bay, bayDims, dyn);
+    for (const o of level.obstacles) {
+      if (o.t === 'cone') {
+        const r = o.r || 10;
+        const g = new THREE.Group();
+        const body = new THREE.Mesh(new THREE.ConeGeometry(r, r * 2.0, 7), coneMat);
+        body.position.y = r; body.castShadow = true; body.receiveShadow = true;
+        const band = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.62, r * 0.74, r * 0.42, 7), bandMat);
+        band.position.y = r * 0.85; band.castShadow = true;
+        const base = new THREE.Mesh(new THREE.BoxGeometry(r * 2.1, r * 0.3, r * 2.1), coneMat);
+        base.position.y = r * 0.15; base.castShadow = true; base.receiveShadow = true;
+        g.add(body, band, base);
+        g.position.set(o.x, 0, o.y);
+        dyn.add(g);
+        o._m = body; o._mBand = band; o._mBase = base;   // for coneHit swap
+      } else if (o.t === 'wall') {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(o.hl * 2, WALL_H, o.hw * 2), wallMat);
+        m.position.set(o.x, WALL_H / 2, o.y); m.rotation.y = -o.ang;
+        m.castShadow = true; m.receiveShadow = true; dyn.add(m);
+      } else if (o.t === 'disc') {
+        const m = new THREE.Mesh(new THREE.CylinderGeometry(o.r, o.r, WALL_H, 28), regionMat);
+        m.position.set(o.cx, WALL_H / 2, o.cy); m.castShadow = true; m.receiveShadow = true; dyn.add(m);
+      } else if (o.t === 'half' || o.t === 'quad') {
+        const pts = regionPolygon(o);
+        if (pts) {
+          const shape = new THREE.Shape(pts.map(p => new THREE.Vector2(p[0], -p[1])));  // -y => world +z
+          const geo = new THREE.ExtrudeGeometry(shape, { depth: WALL_H, bevelEnabled: false });
+          geo.rotateX(-Math.PI / 2);
+          const m = new THREE.Mesh(geo, regionMat);
+          m.castShadow = true; m.receiveShadow = true; dyn.add(m);
+        }
+      }
+    }
+  }
+
+  function coneHit(o) {
+    if (o._m) o._m.material = coneHitMat;
+    if (o._mBase) o._mBase.material = coneHitMat;
+  }
+
+  function update(pose, view) {
+    // --- rig transforms ---
+    const c = Math.cos(pose.theta), s = Math.sin(pose.theta);
+    car.group.position.set(pose.x, 0, pose.y);
+    car.group.rotation.y = -pose.theta;
+    car.steer(pose.delta);
+    const hx = pose.x - G.hitchC * c, hy = pose.y - G.hitchC * s;
+    trailer.group.position.set(hx, 0, hy);
+    trailer.group.rotation.y = -pose.phi;
+
+    // --- camera ---
+    if (view.rotateFollow) {
+      const thS = -Math.PI / 2 - view.camRot;        // recover smoothed heading from camRot
+      const fx = Math.cos(thS), fz = Math.sin(thS);
+      camera.position.set(view.camX - fx * 235, 250, view.camY - fz * 235);
+      camera.up.set(0, 1, 0);
+      camera.lookAt(view.camX + fx * 70, 0, view.camY + fz * 70);
+    } else {
+      camera.position.set(view.camX, 620, view.camY + 0.001);
+      camera.up.set(0, 0, -1);
+      camera.lookAt(view.camX, 0, view.camY);
+    }
+
+    // --- sun follows the rig so shadows stay crisp ---
+    sun.target.position.set(pose.x, 0, pose.y);
+    sun.position.set(pose.x + SUN_DIR.x * 500, SUN_DIR.y * 500, pose.y + SUN_DIR.z * 500);
+
+    // --- bay color ---
+    if (bay) {
+      const col = view.bayActive ? COL.bayGood : COL.bay;
+      bay.pad.material.color.set(col);
+      bay.pad.material.emissive.set(col);
+      for (const fm of bay.frame) { fm.color.set(col); fm.emissive.set(col); }
+    }
+
+    // --- trails ---
+    for (const k of ['front', 'rear', 'trailer']) {
+      const arr = view.trails[k], obj = trailObjs[k];
+      obj.visible = view.trailsOn && arr.length > 1;
+      if (obj.visible) {
+        obj.geometry.setFromPoints(arr.map(p => new THREE.Vector3(p[0], TRAIL_Y, p[1])));
+      }
+    }
+
+    // --- render: scene -> HDR target -> grade pass -> screen ---
+    renderer.setRenderTarget(rt);
+    renderer.render(scene, camera);
+    renderer.setRenderTarget(null);
+    post.material.uniforms.uScene.value = rt.texture;
+    renderer.render(quadScene, quadCam);
+  }
+
+  function project(x, y) {
+    const v = new THREE.Vector3(x, 8, y).project(camera);
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    return { x: (v.x * 0.5 + 0.5) * w, y: (-v.y * 0.5 + 0.5) * h, visible: v.z < 1 && Math.abs(v.x) <= 1 && Math.abs(v.y) <= 1, behind: v.z >= 1 };
+  }
+
+  resize();
+  return { renderer, scene, camera, resize, buildLevel, coneHit, update, project };
+}
+
+// =========================================================================
+// builders
+// =========================================================================
+function mat(color, o = {}) {
+  return new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: o.r ?? 0.55, metalness: o.m ?? 0.0, flatShading: o.flat ?? true, ...(o.extra || {}) });
+}
+
+function buildCar(G) {
+  const group = new THREE.Group();
+  const bodyMat = mat(COL.carBody, { r: 0.5, m: 0.08 });
+  const cabinMat = mat(COL.carCabin, { r: 0.5, m: 0.08 });
+  const glassMat = mat(COL.glass, { r: 0.12, m: 0.5, flat: false });
+  const wheelMat = mat(COL.wheel, { r: 0.75, flat: false });
+  const hubMat = mat(COL.hub, { r: 0.4, m: 0.6, flat: false });
+
+  const len = 2 * G.CAR_HL, wid = G.carW, bodyH = 15, wheelR = G.wheelL / 2;
+  // lower body (slightly tapered: narrower top via a trapezoid-ish stack)
+  const body = new THREE.Mesh(new THREE.BoxGeometry(len, bodyH, wid), bodyMat);
+  body.position.set(G.CAR_CTR, wheelR + bodyH / 2 - 2, 0);
+  body.castShadow = true; body.receiveShadow = true;
+  // hood wedge (front lower)
+  const hood = new THREE.Mesh(new THREE.BoxGeometry(len * 0.32, bodyH * 0.6, wid * 0.92), bodyMat);
+  hood.position.set(G.CAR_CTR + len * 0.30, wheelR + bodyH * 0.4, 0);
+  hood.castShadow = true;
+  // cabin
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(len * 0.42, bodyH * 0.85, wid * 0.86), cabinMat);
+  cabin.position.set(G.CAR_CTR - len * 0.02, wheelR + bodyH + bodyH * 0.30, 0);
+  cabin.castShadow = true;
+  // windshield band
+  const glass = new THREE.Mesh(new THREE.BoxGeometry(len * 0.30, bodyH * 0.6, wid * 0.78), glassMat);
+  glass.position.set(G.CAR_CTR + len * 0.04, wheelR + bodyH + bodyH * 0.32, 0);
+  group.add(body, hood, cabin, glass);
+
+  // wheels: rear at x=0, front at x=L
+  const wheelGeo = new THREE.CylinderGeometry(wheelR, wheelR, G.wheelW + 2, 12);
+  const hubGeo = new THREE.CylinderGeometry(wheelR * 0.45, wheelR * 0.45, G.wheelW + 2.4, 8);
+  const frontWheels = [];
+  const mkWheel = (x, z, steer) => {
+    const w = new THREE.Group();
+    const tire = new THREE.Mesh(wheelGeo, wheelMat); tire.rotation.x = Math.PI / 2; tire.castShadow = true;
+    const hub = new THREE.Mesh(hubGeo, hubMat); hub.rotation.x = Math.PI / 2;
+    w.add(tire, hub);
+    w.position.set(x, wheelR, z);
+    group.add(w);
+    if (steer) frontWheels.push(w);
+  };
+  mkWheel(0, -G.carTrack / 2, false); mkWheel(0, G.carTrack / 2, false);
+  mkWheel(G.L, -G.carTrack / 2, true); mkWheel(G.L, G.carTrack / 2, true);
+
+  return { group, steer: (d) => { for (const w of frontWheels) w.rotation.y = -d; } };
+}
+
+function buildTrailer(G) {
+  const group = new THREE.Group();
+  const boxMat = mat(COL.trailer, { r: 0.55, m: 0.05 });
+  const lidMat = mat(COL.trailerLid, { r: 0.55, m: 0.05 });
+  const tongueMat = mat(COL.tongue, { r: 0.6, m: 0.3, flat: false });
+  const wheelMat = mat(COL.wheel, { r: 0.75, flat: false });
+
+  const len = 2 * G.TR_HL, wid = G.trailerW, boxH = 16, wheelR = G.wheelL / 2;
+  const box = new THREE.Mesh(new THREE.BoxGeometry(len, boxH, wid), boxMat);
+  box.position.set(-G.TR_CTR, wheelR + boxH / 2, 0);
+  box.castShadow = true; box.receiveShadow = true;
+  const lid = new THREE.Mesh(new THREE.BoxGeometry(len * 0.94, boxH * 0.3, wid * 0.94), lidMat);
+  lid.position.set(-G.TR_CTR, wheelR + boxH + boxH * 0.1, 0);
+  lid.castShadow = true;
+  // tongue: from hitch (x=0) toward box front (x=-boxFront)
+  const tongue = new THREE.Mesh(new THREE.BoxGeometry(G.boxFront, 4, 5), tongueMat);
+  tongue.position.set(-G.boxFront / 2, wheelR * 0.7, 0);
+  tongue.castShadow = true;
+  group.add(box, lid, tongue);
+
+  const wheelGeo = new THREE.CylinderGeometry(wheelR, wheelR, G.wheelW + 2, 12);
+  for (const z of [-G.trailerTrack / 2, G.trailerTrack / 2]) {
+    const w = new THREE.Mesh(wheelGeo, wheelMat); w.rotation.x = Math.PI / 2;
+    w.position.set(-G.draw_d, wheelR, z); w.castShadow = true; group.add(w);
+  }
+  return { group };
+}
+
+function buildBay(b, dims, parent) {
+  const group = new THREE.Group();
+  group.position.set(b.x, 0, b.y); group.rotation.y = -b.ang;
+  const hl = dims.hl, hw = dims.hw;
+  const padMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(COL.bay), emissive: new THREE.Color(COL.bay), emissiveIntensity: 0.35,
+    transparent: true, opacity: 0.22, roughness: 1, metalness: 0, depthWrite: false,
+  });
+  const pad = new THREE.Mesh(new THREE.PlaneGeometry(hl * 2, hw * 2), padMat);
+  pad.rotation.x = -Math.PI / 2; pad.position.y = 0.08; pad.receiveShadow = false;
+  group.add(pad);
+
+  // border frame: 4 thin emissive bars
+  const frame = [];
+  const t = 2.2, yb = 0.5;
+  const bars = [
+    [0, -hw, hl * 2, t], [0, hw, hl * 2, t],     // top/bottom (along local x)
+    [-hl, 0, t, hw * 2], [hl, 0, t, hw * 2],      // left/right (along local z)
+  ];
+  for (const [cx, cz, sx, sz] of bars) {
+    const m = new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.bay), emissive: new THREE.Color(COL.bay), emissiveIntensity: 0.8, roughness: 0.7, metalness: 0 });
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(sx, 1.4, sz), m);
+    bar.position.set(cx, yb, cz);
+    group.add(bar); frame.push(m);
+  }
+  parent.add(group);
+  return { group, frame, pad };
+}
+
+// =========================================================================
+// region polygons (replicate the SVG keep-out shapes)
+// =========================================================================
+function regionPolygon(o) {
+  if (o.t === 'half') {
+    const a = o.at;
+    if (o.axis === 'y') return o.sign > 0
+      ? [[-B, a], [B, a], [B, a + 2 * B], [-B, a + 2 * B]]
+      : [[-B, a - 2 * B], [B, a - 2 * B], [B, a], [-B, a]];
+    return o.sign > 0
+      ? [[a, -B], [a + 2 * B, -B], [a + 2 * B, B], [a, B]]
+      : [[a - 2 * B, -B], [a, -B], [a, B], [a - 2 * B, B]];
+  }
+  if (o.t === 'quad') {
+    const r = o.r, sgn = o.flipx ? -1 : 1;
+    const arc = [];
+    const N = o.n ? Math.max(40, Math.round(r / 7.5)) : 24;
+    for (let i = 1; i <= N; i++) {
+      const th = Math.PI + (Math.PI / 2) * (i / N), ct = Math.cos(th), stt = Math.sin(th);
+      const px = o.n ? o.ccx + r * Math.sign(ct) * Math.pow(Math.abs(ct), 2 / o.n) : o.ccx + r * ct;
+      const py = o.n ? o.ccy + r * Math.sign(stt) * Math.pow(Math.abs(stt), 2 / o.n) : o.ccy + r * stt;
+      arc.push([px, py]);
+    }
+    let poly;
+    if (o.mode === 'in') {
+      poly = [[o.ex, B], [o.ex, o.ccy], ...arc, [B, o.ey], [B, B]];
+    } else {
+      poly = [[-B, -B], [-B, B], [o.ex, B], [o.ex, o.ccy], ...arc, [B, o.ey], [B, -B]];
+    }
+    return poly.map(([x, y]) => [sgn * x, y]);
+  }
+  return null;
+}
+
+// =========================================================================
+// environment, sky, grid, trail, target, post
+// =========================================================================
+function buildEnvironment(renderer) {
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const s = new THREE.Scene();
+  s.add(makeSky());
+  const tex = pmrem.fromScene(s, 0, 0.1, 1000).texture;
+  pmrem.dispose();
+  return tex;
+}
+
+function makeSky() {
+  const geo = new THREE.SphereGeometry(8000, 24, 16);
+  const m = new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false,
+    uniforms: {
+      top: { value: new THREE.Color('#5fb8f0') },
+      mid: { value: new THREE.Color('#bfe6ff') },
+      bot: { value: new THREE.Color('#8a93a8') },
+    },
+    vertexShader: `varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+    fragmentShader: `
+      varying vec3 vP; uniform vec3 top, mid, bot;
+      void main(){
+        float h = normalize(vP).y;
+        vec3 c = h > 0.0 ? mix(mid, top, pow(h, 0.55)) : mix(mid, bot, pow(-h, 0.5));
+        gl_FragColor = vec4(c, 1.0);
+      }`,
+  });
+  return new THREE.Mesh(geo, m);
+}
+
+function makeGrid() {
+  const grid = new THREE.GridHelper(24000, 400, new THREE.Color('#46505f'), new THREE.Color('#46505f'));
+  grid.position.y = 0.02;
+  grid.material.transparent = true; grid.material.opacity = 0.35;
+  return grid;
+}
+
+function makeTrail(color) {
+  const geo = new THREE.BufferGeometry();
+  const m = new THREE.LineBasicMaterial({ color: new THREE.Color(color) });
+  const line = new THREE.Line(geo, m); line.frustumCulled = false; line.visible = false;
+  return line;
+}
+
+function makeTarget(w, h) {
+  return new THREE.WebGLRenderTarget(w, h, {
+    type: THREE.HalfFloatType, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+    colorSpace: THREE.NoColorSpace, depthBuffer: true,
+  });
+}
+
+// hand-written tonemap + grade (the droste "tail"): exposure -> exponential
+// tonemap -> subtle vignette. Outputs linear; Three encodes to sRGB on screen.
+function makePost() {
+  const material = new THREE.ShaderMaterial({
+    uniforms: {
+      uScene: { value: null },
+      uRes: { value: new THREE.Vector2(1, 1) },
+      uExposure: { value: 1.7 },
+    },
+    vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+    fragmentShader: `
+      precision highp float;
+      varying vec2 vUv; uniform sampler2D uScene; uniform vec2 uRes; uniform float uExposure;
+      void main(){
+        vec3 c = texture2D(uScene, vUv).rgb;
+        // exponential tonemap (droste): 1 - exp(-exposure * c) + tiny linear toe
+        c = vec3(1.0) - exp(-uExposure * c) + 0.012 * c;
+        // gentle vignette
+        vec2 d = vUv - 0.5;
+        float vig = smoothstep(0.95, 0.32, dot(d, d) * 2.0);
+        c *= mix(0.9, 1.0, vig);
+        gl_FragColor = vec4(c, 1.0);   // linear; renderer applies sRGB
+      }`,
+  });
+  return { material };
+}

@@ -1,0 +1,15 @@
+import { chromium } from 'playwright';
+const idx = Number(process.argv[2] || 0);
+const out = process.argv[3] || '/tmp/lvl.png';
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport:{width:1100,height:760}, deviceScaleFactor:1.5 });
+const errs=[];
+page.on('pageerror', e=>errs.push('PAGEERR: '+e.message));
+page.on('console', m=>{ if(m.type()==='error') errs.push('CONSOLE: '+m.text()); });
+await page.goto('http://localhost:5173/', {waitUntil:'networkidle'});
+await page.waitForTimeout(400);
+await page.evaluate(i => { document.querySelectorAll('#levelList .lvl')[i]?.click(); }, idx);
+await page.waitForTimeout(1200);
+await page.screenshot({ path: out });
+console.log('lvl', idx, 'errors:', errs.length?errs.join('\n'):'(none)', '->', out);
+await browser.close();

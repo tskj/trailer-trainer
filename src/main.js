@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import { createScene } from './render3d.js';
 
 (() => {
   "use strict";
@@ -11,6 +11,12 @@ import * as THREE from 'three';
   const wheelL=14, wheelW=6;
   const CAR_HL=(L+carFrontOv+carRearOv)/2, CAR_HW=carW/2, CAR_CTR=(L+carFrontOv-carRearOv)/2;
   const TR_HL=(boxBack-boxFront)/2, TR_HW=trailerW/2, TR_CTR=(boxFront+boxBack)/2;
+
+  // ---- 3D renderer (Three.js scene; see render3d.js) ----
+  const glCanvas = document.getElementById("gl");
+  const R = createScene(glCanvas, { L, carRearOv, carFrontOv, carW, carTrack, hitchC, draw_d,
+    trailerW, trailerTrack, boxFront, boxBack, wheelL, wheelW, CAR_HL, CAR_HW, CAR_CTR, TR_HL, TR_HW, TR_CTR });
+  addEventListener("resize", () => R.resize());
 
   // ---- articulation limits ----
   const JACK_TRIGGER = 72*Math.PI/180;   // fold this far -> game over
@@ -262,7 +268,7 @@ import * as THREE from 'three';
     }
   });
   stageEl.addEventListener("click", e=>{
-    if(!e.target.closest("svg")) return;                 // ignore clicks on overlay buttons
+    if(e.target.id!=="gl") return;                       // only capture on the canvas, not overlay buttons
     if(document.pointerLockElement!==stageEl && stageEl.requestPointerLock){
       try{ stageEl.requestPointerLock(); }catch(_){}
     }
@@ -316,55 +322,9 @@ import * as THREE from 'three';
     snaps=[snapshot()];   // always have at least one fallback
     currState=prevState=captureState(); acc=0; teleported=false;   // reset interpolation
 
-    const dyn=$("dyn"); dyn.replaceChildren();
-    if(level.bay){
-      const d=bayDims(level.bay);
-      const g=el("g",{transform:`translate(${level.bay.x},${level.bay.y}) rotate(${level.bay.ang*180/Math.PI})`, id:"bayG"});
-      g.appendChild(el("rect",{x:-d.hl,y:-d.hw,width:d.hl*2,height:d.hw*2,rx:4,fill:"rgba(242,196,77,.07)",
-        stroke:"var(--marking)","stroke-width":2.5,"stroke-dasharray":"10 8",id:"bayRect"}));
-      const t=el("text",{x:0,y:4,fill:"var(--marking)","font-family":"monospace","font-size":12,
-        "text-anchor":"middle","letter-spacing":2}); t.textContent="TARGET";
-      g.appendChild(t); dyn.appendChild(g);
-    }
-    const B=8000;
-    level.obstacles.forEach(o=>{
-      if(o.t==="cone"){
-        o.hit=false; o._el=coneEl(o.x,o.y,o.r||10,false); dyn.appendChild(o._el);
-      } else if(o.t==="wall"){
-        const g=el("g",{transform:`translate(${o.x},${o.y}) rotate(${o.ang*180/Math.PI})`});
-        g.appendChild(el("rect",{x:-o.hl,y:-o.hw,width:o.hl*2,height:o.hw*2,fill:"url(#hatch)",
-          stroke:"#5b626a","stroke-width":2,rx:2}));
-        dyn.appendChild(g);
-      } else if(o.t==="half"){
-        const a = o.axis==="y"
-          ? (o.sign>0 ? {x:-B,y:o.at,width:2*B,height:2*B} : {x:-B,y:o.at-2*B,width:2*B,height:2*B})
-          : (o.sign>0 ? {x:o.at,y:-B,width:2*B,height:2*B} : {x:o.at-2*B,y:-B,width:2*B,height:2*B});
-        dyn.appendChild(el("rect", Object.assign({fill:"url(#hatch)",stroke:"none"}, a)));
-        dyn.appendChild(o.axis==="y"
-          ? el("line",{x1:-B,y1:o.at,x2:B,y2:o.at,stroke:"#5b626a","stroke-width":2})
-          : el("line",{x1:o.at,y1:-B,x2:o.at,y2:B,stroke:"#5b626a","stroke-width":2}));
-      } else if(o.t==="quad"){
-        const r=o.r;
-        let arc;
-        if(o.n){
-          const N=Math.max(40,Math.round(r/7.5)); arc=`L ${o.ex} ${o.ccy}`;
-          for(let i=1;i<=N;i++){ const th=Math.PI+(Math.PI/2)*(i/N), ct=Math.cos(th), stt=Math.sin(th);
-            const px=o.ccx + r*Math.sign(ct)*Math.pow(Math.abs(ct),2/o.n);
-            const py=o.ccy + r*Math.sign(stt)*Math.pow(Math.abs(stt),2/o.n);
-            arc+=` L ${px.toFixed(2)} ${py.toFixed(2)}`; }
-        } else {
-          arc=`L ${o.ex} ${o.ccy} A ${r} ${r} 0 0 1 ${o.ccx} ${o.ey}`;
-        }
-        const d = o.mode==="in"
-          ? `M ${o.ex} ${B} ${arc} L ${B} ${o.ey} L ${B} ${B} Z`
-          : `M ${-B} ${-B} L ${-B} ${B} L ${o.ex} ${B} ${arc} L ${B} ${o.ey} L ${B} ${-B} Z`;
-        const qp=el("path",{d,fill:"url(#hatch)",stroke:"#5b626a","stroke-width":2,"stroke-linejoin":"round"});
-        if(o.flipx){ const g=el("g",{transform:"scale(-1,1)"}); g.appendChild(qp); dyn.appendChild(g); }
-        else dyn.appendChild(qp);
-      } else if(o.t==="disc"){
-        dyn.appendChild(el("circle",{cx:o.cx,cy:o.cy,r:o.r,fill:"url(#hatch)",stroke:"#5b626a","stroke-width":2}));
-      }
-    });
+    // build the 3D scene for this level; cones get tagged with o._m for hit-recolor
+    for(const o of level.obstacles){ if(o.t==="cone") o.hit=false; }
+    R.buildLevel(level, level.bay ? bayDims(level.bay) : null);
 
     $("banner").classList.remove("show");
     $("dead").classList.remove("show");
@@ -478,7 +438,7 @@ import * as THREE from 'three';
       if(o.t==="cone"){
         if(circleHitsBox(o.x,o.y,(o.r||10)+1,cb)||circleHitsBox(o.x,o.y,(o.r||10)+1,tb)){
           coneNow=true;
-          if(!o.hit){ o.hit=true; clack(); if(o._el){ const n=coneEl(o.x,o.y,o.r||10,true); o._el.replaceWith(n); o._el=n; } }
+          if(!o.hit){ o.hit=true; clack(); R.coneHit(o); }
         }
       }
       else if(o.t==="wall"){ const ob={cx:o.x,cy:o.y,ang:o.ang,hl:o.hl,hw:o.hw}; if(boxesOverlap(ob,cb)||boxesOverlap(ob,tb)) hitWall=true; }
@@ -539,52 +499,34 @@ import * as THREE from 'three';
     let tx, ty;
     if(rotateFollow){ const bk=52; tx=rs.x - bk*Math.cos(rs.theta); ty=rs.y - bk*Math.sin(rs.theta); } else { tx=(frontX+trAxX)/2; ty=(frontY+trAxY)/2; }
     cam.x+=(tx-cam.x)*0.18; cam.y+=(ty-cam.y)*0.18;
-    if(rotateFollow){
-      camRot += norm((-Math.PI/2 - rs.theta) - camRot)*0.2;
-      $("world").setAttribute("transform",`translate(${VW/2},${VH/2}) rotate(${camRot*180/Math.PI}) translate(${-cam.x},${-cam.y})`);
-    } else {
-      $("world").setAttribute("transform",`translate(${VW/2-cam.x},${VH/2-cam.y})`);
-    }
+    if(rotateFollow) camRot += norm((-Math.PI/2 - rs.theta) - camRot)*0.2;
 
-    // off-screen goal arrow — clamp to the actually-visible region.
-    // (the svg is "xMidYMid slice", so the viewBox is cropped to cover the container; the
-    //  visible part is a centred sub-rect whose size depends on the container's aspect ratio.)
+    // trails: sample the interpolated wheel positions
+    if(trailsOn && !dead){ pushTrail(trails.front,frontX,frontY); pushTrail(trails.rear,rs.x,rs.y); pushTrail(trails.trailer,trAxX,trAxY); }
+
+    // hand the interpolated pose + view state to the 3D renderer
+    R.update(
+      {x:rs.x, y:rs.y, theta:rs.theta, phi:rs.phi, delta:rs.delta},
+      {camX:cam.x, camY:cam.y, camRot, rotateFollow, bayActive:(inPosition||levelDone), trails, trailsOn, dead}
+    );
+
+    // off-screen goal arrow: project the bay to the canvas, clamp to the edge
     const ga=$("goalArrow");
     if(level.bay){
-      const r=$("svg").getBoundingClientRect();
-      const scale=Math.max(r.width/VW, r.height/VH)||1;
-      const hw=(r.width/scale)/2, hh=(r.height/scale)/2, m=34;   // visible half-extents from centre (480,300)
-      let bx,by;
-      if(rotateFollow){ const cc=Math.cos(camRot),ss=Math.sin(camRot),dx0=level.bay.x-cam.x,dy0=level.bay.y-cam.y;
-        bx=VW/2+dx0*cc-dy0*ss; by=VH/2+dx0*ss+dy0*cc; }
-      else { bx=level.bay.x+VW/2-cam.x; by=level.bay.y+VH/2-cam.y; }
-      const dx=bx-VW/2, dy=by-VH/2;
-      if(Math.abs(dx)<=hw-m && Math.abs(dy)<=hh-m){ ga.style.display="none"; }
+      const p=R.project(level.bay.x, level.bay.y);
+      const cw=glCanvas.clientWidth, ch=glCanvas.clientHeight, m=26;
+      const onscreen = p.visible && p.x>=m && p.x<=cw-m && p.y>=m && p.y<=ch-m;
+      if(onscreen) ga.style.display="none";
       else {
-        const sc=Math.min((hw-m)/(Math.abs(dx)||1e-6), (hh-m)/(Math.abs(dy)||1e-6));
-        ga.setAttribute("transform",`translate(${VW/2+dx*sc},${VH/2+dy*sc}) rotate(${Math.atan2(dy,dx)*180/Math.PI})`);
+        let dx=p.x-cw/2, dy=p.y-ch/2;
+        if(p.behind){ dx=-dx; dy=-dy; }
+        const sc=Math.min((cw/2-m)/(Math.abs(dx)||1e-6), (ch/2-m)/(Math.abs(dy)||1e-6));
+        ga.style.transform=`translate(${cw/2+dx*sc-17}px,${ch/2+dy*sc-17}px) rotate(${Math.atan2(dy,dx)}rad)`;
         ga.style.display="";
       }
     } else ga.style.display="none";
 
-    $("trailer").setAttribute("transform",`translate(${hitchX},${hitchY}) rotate(${rs.phi*180/Math.PI})`);
-    $("tongue").setAttribute("x2",-boxFront);
-    $("car").setAttribute("transform",`translate(${rs.x},${rs.y}) rotate(${rs.theta*180/Math.PI})`);
     const deg=st.delta*180/Math.PI;            // HUD steer readout uses live input
-    const wdeg=rs.delta*180/Math.PI;           // front-wheel visual uses interpolated pose
-    $("fwL").setAttribute("transform",`translate(${L},${$("fwL").dataset.cy}) rotate(${wdeg})`);
-    $("fwR").setAttribute("transform",`translate(${L},${$("fwR").dataset.cy}) rotate(${wdeg})`);
-    $("hitchDot").setAttribute("cx",-hitchC);
-
-    if(trailsOn && !dead){ pushTrail(trails.front,frontX,frontY); pushTrail(trails.rear,st.x,st.y); pushTrail(trails.trailer,trAxX,trAxY); }
-    $("trailFront").setAttribute("points",toPts(trails.front));
-    $("trailRear").setAttribute("points",toPts(trails.rear));
-    $("trailTrailer").setAttribute("points",toPts(trails.trailer));
-
-    const bayRect=$("bayRect");
-    if(bayRect){ const on=inPosition||levelDone;
-      bayRect.setAttribute("stroke", on?"var(--good)":"var(--marking)");
-      bayRect.setAttribute("fill", on?"rgba(86,217,138,.12)":"rgba(242,196,77,.07)"); }
 
     const artic=norm(st.theta-st.phi);
     $("hSpeed").textContent=Math.abs(st.v).toFixed(0);
@@ -742,7 +684,7 @@ import * as THREE from 'three';
     requestAnimationFrame(frame);
   }
 
-  buildGeometry();
+  R.resize();
   loadLevel(1);
   requestAnimationFrame(frame);
 })();

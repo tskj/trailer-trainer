@@ -25,7 +25,8 @@
 
   .wrap{flex:1;display:flex;min-height:0;flex-wrap:wrap;overflow:hidden}
   .stage{flex:1 1 560px;position:relative;min-height:360px;background:var(--asphalt)}
-  svg{display:block;width:100%;height:100%}
+  #gl{display:block;width:100%;height:100%}
+  .goalArrow{position:absolute;left:0;top:0;z-index:5;pointer-events:none;transform-origin:50% 50%}
 
   /* floating mouse steering bar, hovering over the view */
   .steerbar{position:absolute;top:12px;left:16px;right:16px;z-index:5;pointer-events:none}
@@ -171,50 +172,10 @@
 
 <div class="wrap">
   <div class="stage">
-    <svg id="svg" viewBox="0 0 960 600" preserveAspectRatio="xMidYMid slice" aria-label="Top-down driving simulator">
-      <defs>
-        <pattern id="grid" width="60" height="60" patternUnits="userSpaceOnUse">
-          <path d="M60 0H0V60" fill="none" stroke="#262b31" stroke-width="1"/>
-        </pattern>
-        <pattern id="hatch" width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
-          <rect width="8" height="8" fill="#3a3f45"/>
-          <line x1="0" y1="0" x2="0" y2="8" stroke="#4c535a" stroke-width="4"/>
-        </pattern>
-        <radialGradient id="coneGrad" cx="50%" cy="40%" r="62%">
-          <stop offset="0%" stop-color="#ef8636"/>
-          <stop offset="55%" stop-color="#cf6417"/>
-          <stop offset="100%" stop-color="#9f4a0e"/>
-        </radialGradient>
-        <radialGradient id="coneHit" cx="50%" cy="40%" r="62%">
-          <stop offset="0%" stop-color="#c2c7cc"/>
-          <stop offset="55%" stop-color="#878d93"/>
-          <stop offset="100%" stop-color="#565b61"/>
-        </radialGradient>
-      </defs>
-      <g id="world">
-        <rect x="-12000" y="-12000" width="24000" height="24000" fill="var(--asphalt)"/>
-        <rect x="-12000" y="-12000" width="24000" height="24000" fill="url(#grid)"/>
-        <g id="dyn"></g>
-        <polyline id="trailFront"   fill="none" stroke="var(--cyan)"    stroke-width="2"   opacity=".85" stroke-linecap="round"/>
-        <polyline id="trailRear"    fill="none" stroke="var(--amber)"   stroke-width="2"   opacity=".9"  stroke-linecap="round"/>
-        <polyline id="trailTrailer" fill="none" stroke="var(--magenta)" stroke-width="2.5" opacity=".95" stroke-linecap="round"/>
-        <g id="trailer">
-          <line id="tongue" x1="0" y1="0" x2="0" y2="0" stroke="#9aa3ac" stroke-width="4" stroke-linecap="round"/>
-          <rect id="tbox" fill="#2f3a45" stroke="#5b6b78" stroke-width="2" rx="3"/>
-          <rect id="twheelL" fill="#0d0f11"/><rect id="twheelR" fill="#0d0f11"/>
-        </g>
-        <g id="car">
-          <rect id="cbody" fill="#324a52" stroke="var(--cyan)" stroke-width="2" rx="6"/>
-          <rect id="cwindow" fill="#243036" rx="3"/>
-          <rect id="rwL" fill="#0d0f11"/><rect id="rwR" fill="#0d0f11"/>
-          <g id="fwL"><rect fill="#0d0f11"/></g><g id="fwR"><rect fill="#0d0f11"/></g>
-          <circle id="hitchDot" r="3.2" fill="var(--marking)"/>
-        </g>
-      </g>
-      <g id="goalArrow" style="display:none">
-        <circle r="15" fill="rgba(16,18,21,.72)" stroke="var(--marking)" stroke-width="2"/>
-        <path d="M -8 -6 L 9 0 L -8 6 Z" fill="var(--marking)"/>
-      </g>
+    <canvas id="gl"></canvas>
+    <svg class="goalArrow" id="goalArrow" width="34" height="34" viewBox="-17 -17 34 34" style="display:none">
+      <circle r="15" fill="rgba(16,18,21,.72)" stroke="var(--marking)" stroke-width="2"/>
+      <path d="M -8 -6 L 9 0 L -8 6 Z" fill="var(--marking)"/>
     </svg>
 
     <div class="steerbar">
