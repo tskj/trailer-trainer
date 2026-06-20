@@ -341,14 +341,15 @@ function buildBay(b, dims, parent) {
   const padMat = new THREE.MeshStandardMaterial({
     color: new THREE.Color(COL.bay), emissive: new THREE.Color(COL.bay), emissiveIntensity: 0.35,
     transparent: true, opacity: 0.22, roughness: 1, metalness: 0, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,   // beat ground z-fighting
   });
   const pad = new THREE.Mesh(new THREE.PlaneGeometry(hl * 2, hw * 2), padMat);
-  pad.rotation.x = -Math.PI / 2; pad.position.y = 0.08; pad.receiveShadow = false;
+  pad.rotation.x = -Math.PI / 2; pad.position.y = 0.25; pad.receiveShadow = false;
   group.add(pad);
 
   // border frame: 4 thin emissive bars
   const frame = [];
-  const t = 2.2, yb = 0.5;
+  const t = 2.2, yb = 0.8;
   const bars = [
     [0, -hw, hl * 2, t], [0, hw, hl * 2, t],     // top/bottom (along local x)
     [-hl, 0, t, hw * 2], [hl, 0, t, hw * 2],      // left/right (along local z)

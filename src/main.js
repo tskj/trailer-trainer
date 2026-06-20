@@ -25,7 +25,6 @@ import { createScene } from './render3d.js';
   const MAX_FWD=155, MAX_REV=62;
   // ---- steering: no auto-centre, so a set turn radius is held ----
   const MAX_STEER=36*Math.PI/180, STEER_RATE=0.85, CENTRE_SNAP=0.026;
-  const MOUSE_SENS=0.0038;   // rad of steer per px of locked-mouse movement
 
   // ---- rewind double-buffer ----
   const SAMPLE_INTERVAL=1.5, DEAD_TIME=1.0;
@@ -246,14 +245,13 @@ import { createScene } from './render3d.js';
   const stageEl = document.querySelector(".stage");
   stageEl.addEventListener("mousemove", e=>{
     if(!st) return;
+    const r = stageEl.getBoundingClientRect();
     if(locked){
-      st.delta = clamp(st.delta + e.movementX*MOUSE_SENS, -MAX_STEER, MAX_STEER);
+      // match the non-captured feel: full lock == moving across half the view width
+      st.delta = clamp(st.delta + e.movementX*(MAX_STEER/(r.width*0.5)), -MAX_STEER, MAX_STEER);
     } else {
-      const r = stageEl.getBoundingClientRect();
-      let frac = clamp((e.clientX - r.left)/r.width*2 - 1, -1, 1);
-      const dz = 0.05; let m = Math.abs(frac);
-      m = m < dz ? 0 : (m - dz)/(1 - dz);
-      m = Math.pow(m, 1.4);
+      const frac = clamp((e.clientX - r.left)/r.width*2 - 1, -1, 1);
+      const m = Math.pow(Math.abs(frac), 1.4);   // no deadband; the curve eases the centre
       st.delta = Math.sign(frac) * m * MAX_STEER;
     }
   });
