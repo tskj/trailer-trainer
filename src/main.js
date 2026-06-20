@@ -246,42 +246,47 @@ import { createScene } from './render3d.js';
       actx = actx || new (window.AudioContext||window.webkitAudioContext)();
       if(actx.state==="suspended") actx.resume();
       const master=actx.createGain(); master.gain.value=0.0; master.connect(actx.destination);
-      // gentle waveshaper for V8 grit (soft-clip, not a hard clip)
+      // master LOWPASS: kills the sharp-edge crackle (low-freq saw/square click on
+      // every cycle) and the screaming highs from the shaper -> leaves a deep rumble.
+      const lp=actx.createBiquadFilter(); lp.type="lowpass"; lp.frequency.value=300; lp.Q.value=0.4; lp.connect(master);
+      // gentle waveshaper for grit (tamed by the lowpass downstream)
       const shaper=actx.createWaveShaper(); shaper.oversample="4x";
-      { const n=1024, c=new Float32Array(n), k=2.4; for(let i=0;i<n;i++){ const x=i/(n-1)*2-1; c[i]=Math.tanh(k*x); } shaper.curve=c; }
-      shaper.connect(master);
-      // V8 lope: a SMOOTH (triangle) LFO at the firing rate gently pulses the bus —
-      // sawtooth clicked every cycle; depth kept so the bus stays in (0,1), no clip.
-      const bus=actx.createGain(); bus.gain.value=0.5; bus.connect(shaper);
-      const lfo=actx.createOscillator(); lfo.type="triangle"; lfo.frequency.value=22;
-      const lfoGain=actx.createGain(); lfoGain.gain.value=0.28; lfo.connect(lfoGain); lfoGain.connect(bus.gain); lfo.start();
-      // 0.5x sub-octave for the deep rumble, then fundamental + a couple of harmonics.
-      // Gains kept low so the summed signal doesn't slam the shaper into hard clipping.
+      { const n=1024, c=new Float32Array(n), k=2.2; for(let i=0;i<n;i++){ const x=i/(n-1)*2-1; c[i]=Math.tanh(k*x); } shaper.curve=c; }
+      shaper.connect(lp);
+      // V8 lope: a smooth (triangle) LFO at the firing rate gently pulses the bus.
+      // bus level kept low so the summed signal never exceeds the shaper's [-1,1]
+      // input (past that a WaveShaper hard-clips flat = crackle); it just gently saturates.
+      const bus=actx.createGain(); bus.gain.value=0.42; bus.connect(shaper);
+      const lfo=actx.createOscillator(); lfo.type="triangle"; lfo.frequency.value=24;
+      const lfoGain=actx.createGain(); lfoGain.gain.value=0.22; lfo.connect(lfoGain); lfoGain.connect(bus.gain); lfo.start();
+      // sub-octave (sine) + fundamental + harmonics; the lowpass downstream removes
+      // the clicky high-frequency edges, so these become a smooth low rumble.
       const oscs=[0.5,1,2,3].map((mult,i)=>{
-        const o=actx.createOscillator(); o.type=["triangle","sawtooth","square","triangle"][i]; o.frequency.value=22*mult;
-        const g=actx.createGain(); g.gain.value=[0.5,0.28,0.09,0.03][i];   // sub-heavy for rumble
+        const o=actx.createOscillator(); o.type=["sine","sawtooth","sawtooth","triangle"][i]; o.frequency.value=32*mult;
+        const g=actx.createGain(); g.gain.value=[0.5,0.32,0.15,0.06][i];
         o.connect(g); g.connect(bus); o.start(); return {o,mult};
       });
-      // looping noise -> low bandpass: the bulk of the "engine feel" per the talk
+      // low combustion-noise rumble bed (~half the feel per the talk)
       const buf=actx.createBuffer(1,actx.sampleRate,actx.sampleRate), d=buf.getChannelData(0);
       for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
       const noise=actx.createBufferSource(); noise.buffer=buf; noise.loop=true;
-      const nf=actx.createBiquadFilter(); nf.type="bandpass"; nf.frequency.value=160; nf.Q.value=0.5;
+      const nf=actx.createBiquadFilter(); nf.type="lowpass"; nf.frequency.value=140; nf.Q.value=0.7;
       const ng=actx.createGain(); ng.gain.value=0.0;
       noise.connect(nf); nf.connect(ng); ng.connect(bus); noise.start();
-      engine={master,oscs,nf,ng,lfo};
+      engine={master,oscs,nf,ng,lfo,lp};
     }catch(e){ engine=null; }
   }
   function updateEngine(speed, throttleAmt){
     if(!engine||!actx) return;
     const t=actx.currentTime, sp=Math.abs(speed), load=Math.min(1,Math.abs(throttleAmt)), rev=Math.min(1,sp/MAX_SPEED);
-    // deep, growly firing frequency (sub-octave + sqrt-compressed top so it rumbles)
-    const f0=19 + Math.sqrt(sp)*1.9 + load*5;            // idle ~19Hz, max ~55Hz (sub an octave below)
+    // firing frequency tuned so the harmonics land in the audible rumble band
+    const f0=30 + Math.sqrt(sp)*2.2 + load*6;            // idle ~30Hz, max ~72Hz
     for(const {o,mult} of engine.oscs) o.frequency.setTargetAtTime(f0*mult, t, 0.06);
-    engine.lfo.frequency.setTargetAtTime(Math.max(8, f0*0.55), t, 0.05);  // V8 lope/blat rate
-    engine.nf.frequency.setTargetAtTime(80 + sp*0.9, t, 0.06);
-    engine.ng.gain.setTargetAtTime(0.2*(0.4+0.6*load), t, 0.08);
-    engine.master.gain.setTargetAtTime(0.06*(0.45+0.55*rev+0.4*load), t, 0.08);
+    engine.lfo.frequency.setTargetAtTime(Math.max(9, f0*0.5), t, 0.05);   // V8 lope rate
+    engine.lp.frequency.setTargetAtTime(260 + sp*1.3, t, 0.08);           // deep at idle, brightens a touch with revs
+    engine.nf.frequency.setTargetAtTime(110 + sp*0.8, t, 0.06);
+    engine.ng.gain.setTargetAtTime(0.22*(0.45+0.55*load), t, 0.08);       // rumble bed (combustion noise)
+    engine.master.gain.setTargetAtTime(0.09*(0.45+0.55*rev+0.4*load), t, 0.08);
   }
 
   // ---- input ----
