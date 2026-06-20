@@ -18,6 +18,8 @@ import * as THREE from 'three';
 const B = 8000;                       // "infinity" extent for half-plane / quad regions (matches sim)
 const WALL_H = 34;                    // raised-region / wall height
 const TRAIL_Y = 0.6;                  // trail ribbon height above ground
+const DISPLAY_FOV = 42;               // the framing the player sees
+const OVERSCAN = 1.12;                // render this much wider so the lens barrel can sample outward
 
 // ---- palette (sRGB hex; vibrant + cute) ----
 const COL = {
@@ -63,7 +65,9 @@ export function createScene(canvas, G) {
   renderer.outputColorSpace = THREE.SRGBColorSpace;
 
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(42, 1, 1, 12000);
+  // render wider than we display, so the lens pass can push the edges out (barrel) without black corners
+  const fovWide = 2 * Math.atan(Math.tan(DISPLAY_FOV * Math.PI / 360) * OVERSCAN) * 180 / Math.PI;
+  const camera = new THREE.PerspectiveCamera(fovWide, 1, 1, 12000);
 
   // ---- HDR target + hand-written grade pass ----
   let rt = makeTarget(1, 1);
@@ -237,6 +241,7 @@ export function createScene(canvas, G) {
 
   function project(x, y) {
     const v = new THREE.Vector3(x, 8, y).project(camera);
+    v.x *= OVERSCAN; v.y *= OVERSCAN;             // wide render is cropped back to the display FOV
     const w = canvas.clientWidth, h = canvas.clientHeight;
     return { x: (v.x * 0.5 + 0.5) * w, y: (-v.y * 0.5 + 0.5) * h, visible: v.z < 1 && Math.abs(v.x) <= 1 && Math.abs(v.y) <= 1, behind: v.z >= 1 };
   }
@@ -518,24 +523,37 @@ function makeTarget(w, h) {
   });
 }
 
-// hand-written tonemap + grade (the droste "tail"): exposure -> exponential
-// tonemap -> subtle vignette. Outputs linear; Three encodes to sRGB on screen.
+// hand-written tonemap + grade (the droste "tail"): lens warp -> exposure ->
+// exponential tonemap -> subtle vignette. Outputs linear; Three -> sRGB on screen.
 function makePost() {
   const material = new THREE.ShaderMaterial({
     uniforms: {
       uScene: { value: null },
       uRes: { value: new THREE.Vector2(1, 1) },
       uExposure: { value: 1.7 },
+      uLens: { value: 0.06 },             // droste used 0.05; 0 = off. radial barrel strength
+      uOverscan: { value: OVERSCAN },
     },
     vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
     fragmentShader: `
       precision highp float;
-      varying vec2 vUv; uniform sampler2D uScene; uniform vec2 uRes; uniform float uExposure;
+      varying vec2 vUv; uniform sampler2D uScene; uniform vec2 uRes;
+      uniform float uExposure; uniform float uLens; uniform float uOverscan;
       void main(){
-        vec3 c = texture2D(uScene, vUv).rgb;
+        // droste lens: radial  lens = uLens * |uv|^2 * uv  (aspect-correct, square units,
+        // long axis spanning [-1,1]). Crop the overscanned render back, then sample OUTWARD
+        // so the edges show a touch more scene -> the photographic barrel droste had.
+        float aspect = uRes.x / uRes.y;
+        vec2 p   = vUv * 2.0 - 1.0;                 // [-1,1] both axes
+        vec2 uv  = vec2(p.x, p.y / aspect);         // square units
+        vec2 lens = uLens * dot(uv, uv) * uv;
+        vec2 uvd = uv / uOverscan + lens;
+        vec2 sp  = vec2(uvd.x, uvd.y * aspect);     // undo aspect
+        vec2 suv = clamp(sp * 0.5 + 0.5, 0.0, 1.0);
+        vec3 c = texture2D(uScene, suv).rgb;
         // exponential tonemap (droste): 1 - exp(-exposure * c) + tiny linear toe
         c = vec3(1.0) - exp(-uExposure * c) + 0.012 * c;
-        // gentle vignette
+        // gentle vignette (on undistorted screen position)
         vec2 d = vUv - 0.5;
         float vig = smoothstep(0.95, 0.32, dot(d, d) * 2.0);
         c *= mix(0.9, 1.0, vig);
