@@ -1,0 +1,12 @@
+import { chromium } from 'playwright';
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport:{width:1100,height:760} });
+const logs=[]; page.on('console', m=>{ if(m.text().includes('SKID')) logs.push(m.text()); });
+await page.goto('http://localhost:5173/', {waitUntil:'networkidle'});
+await page.evaluate(()=>document.querySelectorAll('#levelList .lvl')[0]?.click());
+await page.waitForTimeout(300);
+await page.keyboard.down('e'); await page.waitForTimeout(3000);
+await page.keyboard.down('f'); await page.waitForTimeout(1500);
+await page.keyboard.up('f'); await page.keyboard.up('e');
+console.log(logs.join('\n') || 'NO SKID LOGS');
+await browser.close();

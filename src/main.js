@@ -243,19 +243,24 @@ import { createScene } from './render3d.js';
       actx = actx || new (window.AudioContext||window.webkitAudioContext)();
       if(actx.state==="suspended") actx.resume();
       const master=actx.createGain(); master.gain.value=0.0; master.connect(actx.destination);
+      // waveshaper for grit/growl: soft-clip everything through it
+      const shaper=actx.createWaveShaper(); shaper.oversample="2x";
+      { const n=1024, c=new Float32Array(n), k=3.2; for(let i=0;i<n;i++){ const x=i/(n-1)*2-1; c[i]=Math.tanh(k*x); } shaper.curve=c; }
+      shaper.connect(master);
+      const bus=actx.createGain(); bus.gain.value=1.0; bus.connect(shaper);   // dry mix into the shaper
       // 0.5x sub-octave for the deep rumble, then fundamental + a couple of harmonics
       const oscs=[0.5,1,2,3].map((mult,i)=>{
-        const o=actx.createOscillator(); o.type=["triangle","sawtooth","square","triangle"][i]; o.frequency.value=30*mult;
-        const g=actx.createGain(); g.gain.value=[0.5,0.42,0.16,0.06][i];
-        o.connect(g); g.connect(master); o.start(); return {o,mult};
+        const o=actx.createOscillator(); o.type=["triangle","sawtooth","square","triangle"][i]; o.frequency.value=24*mult;
+        const g=actx.createGain(); g.gain.value=[0.62,0.42,0.14,0.05][i];
+        o.connect(g); g.connect(bus); o.start(); return {o,mult};
       });
-      // looping noise -> bandpass: the bulk of the "engine feel" per the talk
+      // looping noise -> low bandpass: the bulk of the "engine feel" per the talk
       const buf=actx.createBuffer(1,actx.sampleRate,actx.sampleRate), d=buf.getChannelData(0);
       for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
       const noise=actx.createBufferSource(); noise.buffer=buf; noise.loop=true;
-      const nf=actx.createBiquadFilter(); nf.type="bandpass"; nf.frequency.value=350; nf.Q.value=0.6;
+      const nf=actx.createBiquadFilter(); nf.type="bandpass"; nf.frequency.value=180; nf.Q.value=0.5;
       const ng=actx.createGain(); ng.gain.value=0.0;
-      noise.connect(nf); nf.connect(ng); ng.connect(master); noise.start();
+      noise.connect(nf); nf.connect(ng); ng.connect(bus); noise.start();
       engine={master,oscs,nf,ng};
     }catch(e){ engine=null; }
   }
@@ -263,10 +268,10 @@ import { createScene } from './render3d.js';
     if(!engine||!actx) return;
     const t=actx.currentTime, sp=Math.abs(speed), load=Math.min(1,Math.abs(throttleAmt)), rev=Math.min(1,sp/MAX_SPEED);
     // deep, growly firing frequency (sub-octave + sqrt-compressed top so it rumbles)
-    const f0=26 + Math.sqrt(sp)*2.5 + load*6;            // idle ~26Hz, max ~75Hz (sub at half)
+    const f0=20 + Math.sqrt(sp)*1.9 + load*5;            // idle ~20Hz, max ~55Hz (sub an octave below)
     for(const {o,mult} of engine.oscs) o.frequency.setTargetAtTime(f0*mult, t, 0.06);
-    engine.nf.frequency.setTargetAtTime(120 + sp*1.4, t, 0.06);
-    engine.ng.gain.setTargetAtTime(0.2*(0.4+0.6*load), t, 0.08);
+    engine.nf.frequency.setTargetAtTime(90 + sp*1.0, t, 0.06);
+    engine.ng.gain.setTargetAtTime(0.24*(0.4+0.6*load), t, 0.08);
     engine.master.gain.setTargetAtTime(0.05*(0.45+0.55*rev+0.4*load), t, 0.08);
   }
 
@@ -587,6 +592,18 @@ import { createScene } from './render3d.js';
       {camX:cam.x, camY:cam.y, camRot, rotateFollow, bayActive:(inPosition||levelDone), trails, trailsOn, dead}
     );
 
+    // skidmarks: lay rubber at the rear wheels when the tail slips/spins, and at the
+    // trailer wheels when it fishtails. (lateral dir = (-s,c) for car, (-sp,cp) for trailer)
+    const htC=carTrack/2, htT=trailerTrack/2;
+    const rearSkid  = !dead && (st._ar>0.18 || (st._gl>0.8 && Math.abs(st.v)>10));
+    const trailSkid = !dead && st._aT>0.2;
+    R.updateSkids([
+      {key:'rl', x:rs.x - s*htC,  y:rs.y + c*htC,  on:rearSkid},
+      {key:'rr', x:rs.x + s*htC,  y:rs.y - c*htC,  on:rearSkid},
+      {key:'tl', x:trAxX - sp*htT, y:trAxY + cp*htT, on:trailSkid},
+      {key:'tr', x:trAxX + sp*htT, y:trAxY - cp*htT, on:trailSkid},
+    ]);
+
     // off-screen goal arrow: project the bay to the canvas, clamp to the edge
     const ga=$("goalArrow");
     if(level.bay){
@@ -768,5 +785,5 @@ import { createScene } from './render3d.js';
   requestAnimationFrame(frame);
 
   // debug telemetry hook (read by test scripts)
-  window.__tt = () => ({ v:st.v, vlat:st.vlat, om:st.omega, omT:st.omegaT, delta:st.delta, artic:norm(st.theta-st.phi)*57.3 });
+  window.__tt = () => ({ v:st.v, vlat:st.vlat, om:st.omega, omT:st.omegaT, delta:st.delta, artic:norm(st.theta-st.phi)*57.3, ar:st._ar, gl:st._gl, aT:st._aT, skids:R.skidCountDbg?R.skidCountDbg():-1 });
 })();

@@ -132,6 +132,37 @@ export function createScene(canvas, G) {
   };
   scene.add(trailObjs.front, trailObjs.rear, trailObjs.trailer);
 
+  // skidmarks: dark quad ribbons stamped where wheels slip (rebuild attribute on change)
+  const SKID_MAX = 700, SKID_W = 9, SKID_Y = 0.18;
+  const skidGeo = new THREE.BufferGeometry();
+  skidGeo.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+  const skidMesh = new THREE.Mesh(skidGeo, new THREE.MeshBasicMaterial({
+    color: new THREE.Color('#16161c'), transparent: true, opacity: 0.5, depthWrite: false,
+    side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -4,
+  }));
+  skidMesh.frustumCulled = false; skidMesh.renderOrder = 2;
+  scene.add(skidMesh);
+  let skidVerts = [], skidDirty = false;
+  const skidLast = {};
+  function emitQuad(x0, z0, x1, z1) {
+    const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz) || 1;
+    const px = -dz / len * SKID_W * 0.5, pz = dx / len * SKID_W * 0.5, Y = SKID_Y;
+    skidVerts.push(x0+px,Y,z0+pz, x0-px,Y,z0-pz, x1-px,Y,z1-pz,  x0+px,Y,z0+pz, x1-px,Y,z1-pz, x1+px,Y,z1+pz);
+    if (skidVerts.length > SKID_MAX * 18) skidVerts.splice(0, skidVerts.length - SKID_MAX * 18);
+    skidDirty = true;
+  }
+  function updateSkids(marks) {
+    for (const m of marks) {
+      if (m.on) {
+        const last = skidLast[m.key];
+        if (last) { if ((last[0]-m.x)**2 + (last[1]-m.y)**2 >= 1.5) { emitQuad(last[0], last[1], m.x, m.y); skidLast[m.key] = [m.x, m.y]; } }
+        else skidLast[m.key] = [m.x, m.y];
+      } else skidLast[m.key] = null;
+    }
+    if (skidDirty) { const g=new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(skidVerts,3)); const old=skidMesh.geometry; skidMesh.geometry=g; old.dispose(); skidDirty=false; }
+  }
+  function clearSkids() { skidVerts = []; for (const k in skidLast) skidLast[k] = null; const old=skidMesh.geometry; skidMesh.geometry=new THREE.BufferGeometry(); old.dispose(); }
+
   let bay = null;   // {group, frame:[mats], pad}
 
   // ------------------------------------------------------------------ API
@@ -146,6 +177,7 @@ export function createScene(canvas, G) {
 
   function buildLevel(level, bayDims) {
     dyn.clear();
+    clearSkids();
     bay = null;
     if (level.bay) bay = buildBay(level.bay, bayDims, dyn);
     for (const o of level.obstacles) {
@@ -247,7 +279,7 @@ export function createScene(canvas, G) {
   }
 
   resize();
-  return { renderer, scene, camera, resize, buildLevel, coneHit, update, project };
+  return { renderer, scene, camera, resize, buildLevel, coneHit, update, project, updateSkids, clearSkids, skidCountDbg: () => skidVerts.length/18 };
 }
 
 // =========================================================================
