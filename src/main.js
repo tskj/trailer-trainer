@@ -25,12 +25,14 @@ import { createScene } from './render3d.js';
   const MAX_SPEED=440;                              // safety clamp
   // ---- tyres: lateral grip is a saturating slip-angle force (grip below the
   //      limit -> follows the heading like before; past it -> slides/drifts) ----
-  const GRIP_F=190, GRIP_R=140, KSTIFF=9.0, REAR_LONG=0.27;  // REAR_LONG: throttle/brake eats rear grip (RWD power-oversteer)
-  const LR=L*0.45, LF=L-LR, IZ=360, YAW_DAMP=3.0;   // COG offsets, yaw inertia, spin damping (catchable drift)
+  const GRIP_F=195, GRIP_R=205, KSTIFF=9.0, REAR_LONG=0.0;  // grippy + no power-oversteer -> the car stays planted
+  const LR=L*0.45, LF=L-LR, IZ=360, YAW_DAMP=2.2;   // COG offsets, yaw inertia, spin damping
   // ---- trailer tyre: grips at parking speed (~old kinematic feel), slides at the
   //      limit; braking locks its wheel so it fishtails on the brakes ----
-  const GRIP_T=66, KT=8.0, IT=550, DAMP_T=2.6, TBRAKE_GRIP=0.22, TBRAKE_LOCK=0.05;
-  const COUPLE=0.55;                                // how hard the trailer yanks the car back (two-way)
+  const GRIP_T=90, KT=8.0, IT=500, DAMP_T=2.6, TBRAKE_GRIP=0.22, TBRAKE_LOCK=0.05;
+  // two-way coupling: the trailer's MASS (not just its tyre force) reacts on the car
+  // at the hitch, so a swinging / whipping trailer drags the car around (tail wags dog)
+  const M_T=0.85, YANK_MAX=680;
   // ---- steering: no auto-centre, so a set turn radius is held ----
   const MAX_STEER=36*Math.PI/180;
   // keyboard steering mirrors the throttle: force + viscous drag + coulomb return,
@@ -243,35 +245,40 @@ import { createScene } from './render3d.js';
       actx = actx || new (window.AudioContext||window.webkitAudioContext)();
       if(actx.state==="suspended") actx.resume();
       const master=actx.createGain(); master.gain.value=0.0; master.connect(actx.destination);
-      // waveshaper for grit/growl: soft-clip everything through it
-      const shaper=actx.createWaveShaper(); shaper.oversample="2x";
-      { const n=1024, c=new Float32Array(n), k=3.2; for(let i=0;i<n;i++){ const x=i/(n-1)*2-1; c[i]=Math.tanh(k*x); } shaper.curve=c; }
+      // heavy waveshaper for V8 grit: soft-clip everything through it
+      const shaper=actx.createWaveShaper(); shaper.oversample="4x";
+      { const n=1024, c=new Float32Array(n), k=5.0; for(let i=0;i<n;i++){ const x=i/(n-1)*2-1; c[i]=Math.tanh(k*x); } shaper.curve=c; }
       shaper.connect(master);
-      const bus=actx.createGain(); bus.gain.value=1.0; bus.connect(shaper);   // dry mix into the shaper
+      // V8 lope: an LFO at the firing rate amplitude-modulates the bus into a pulse
+      // train (the lopey "blat-blat-blat" rumble), on top of a base level.
+      const bus=actx.createGain(); bus.gain.value=0.55; bus.connect(shaper);
+      const lfo=actx.createOscillator(); lfo.type="sawtooth"; lfo.frequency.value=22;
+      const lfoGain=actx.createGain(); lfoGain.gain.value=0.5; lfo.connect(lfoGain); lfoGain.connect(bus.gain); lfo.start();
       // 0.5x sub-octave for the deep rumble, then fundamental + a couple of harmonics
       const oscs=[0.5,1,2,3].map((mult,i)=>{
-        const o=actx.createOscillator(); o.type=["triangle","sawtooth","square","triangle"][i]; o.frequency.value=24*mult;
-        const g=actx.createGain(); g.gain.value=[0.62,0.42,0.14,0.05][i];
+        const o=actx.createOscillator(); o.type=["triangle","sawtooth","square","triangle"][i]; o.frequency.value=22*mult;
+        const g=actx.createGain(); g.gain.value=[0.85,0.4,0.12,0.04][i];   // sub-heavy for rumble
         o.connect(g); g.connect(bus); o.start(); return {o,mult};
       });
       // looping noise -> low bandpass: the bulk of the "engine feel" per the talk
       const buf=actx.createBuffer(1,actx.sampleRate,actx.sampleRate), d=buf.getChannelData(0);
       for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
       const noise=actx.createBufferSource(); noise.buffer=buf; noise.loop=true;
-      const nf=actx.createBiquadFilter(); nf.type="bandpass"; nf.frequency.value=180; nf.Q.value=0.5;
+      const nf=actx.createBiquadFilter(); nf.type="bandpass"; nf.frequency.value=160; nf.Q.value=0.5;
       const ng=actx.createGain(); ng.gain.value=0.0;
       noise.connect(nf); nf.connect(ng); ng.connect(bus); noise.start();
-      engine={master,oscs,nf,ng};
+      engine={master,oscs,nf,ng,lfo};
     }catch(e){ engine=null; }
   }
   function updateEngine(speed, throttleAmt){
     if(!engine||!actx) return;
     const t=actx.currentTime, sp=Math.abs(speed), load=Math.min(1,Math.abs(throttleAmt)), rev=Math.min(1,sp/MAX_SPEED);
     // deep, growly firing frequency (sub-octave + sqrt-compressed top so it rumbles)
-    const f0=20 + Math.sqrt(sp)*1.9 + load*5;            // idle ~20Hz, max ~55Hz (sub an octave below)
+    const f0=19 + Math.sqrt(sp)*1.9 + load*5;            // idle ~19Hz, max ~55Hz (sub an octave below)
     for(const {o,mult} of engine.oscs) o.frequency.setTargetAtTime(f0*mult, t, 0.06);
-    engine.nf.frequency.setTargetAtTime(90 + sp*1.0, t, 0.06);
-    engine.ng.gain.setTargetAtTime(0.24*(0.4+0.6*load), t, 0.08);
+    engine.lfo.frequency.setTargetAtTime(Math.max(8, f0*0.55), t, 0.05);  // V8 lope/blat rate
+    engine.nf.frequency.setTargetAtTime(80 + sp*0.9, t, 0.06);
+    engine.ng.gain.setTargetAtTime(0.26*(0.4+0.6*load), t, 0.08);
     engine.master.gain.setTargetAtTime(0.05*(0.45+0.55*rev+0.4*load), t, 0.08);
   }
 
@@ -463,11 +470,21 @@ import { createScene } from './render3d.js';
       const aT = Math.atan2(vLatT, Math.max(Math.abs(vFwdT), 3));
       const gT = GRIP_T*(tbrake ? TBRAKE_LOCK : (braking ? TBRAKE_GRIP : 1));   // trailer brake locks the wheel -> fishtail
       const Flat = -gT*fadeT*Math.tanh(KT*aT);              // trailer lateral tyre force (signed)
-      // that force, in world, reacts on the car at the hitch (the "yank")
-      const Ftx=-Flat*sph, Fty=Flat*cph;
-      const yX=COUPLE*Ftx, yY=COUPLE*Fty;
-      const yankBX = yX*cth + yY*sth, yankBY = -yX*sth + yY*cth;   // -> car body frame
-      const yankTau = d*(sth*yX - cth*yY);                  // r_hitch x F  (r=-d*heading)
+      // force the trailer puts on the car at the hitch = its tyre force PLUS the
+      // reaction to its own mass swinging (tangential from omTdot + centripetal from
+      // omegaT^2). The mass term is what drags the car when the trailer whips out,
+      // even with no trailer grip — the tail wagging the dog.
+      const wt = st.omegaT;
+      const omTdot = (-draw_d*Flat)/IT - DAMP_T*(wt - om);  // trailer angular accel
+      let Ftx = -Flat*sph - M_T*omTdot*draw_d*sph - M_T*wt*wt*draw_d*cph;
+      let Fty =  Flat*cph + M_T*omTdot*draw_d*cph - M_T*wt*wt*draw_d*sph;
+      const ymag = Math.hypot(Ftx,Fty); if(ymag>YANK_MAX){ const k=YANK_MAX/ymag; Ftx*=k; Fty*=k; }
+      // gate the yank by speed (no yank at a parking crawl) AND by how far the trailer
+      // has swung out (near-aligned -> car grips normally; swung -> it drags hard)
+      const swing = Math.min(1, Math.abs(norm(st.theta - st.phi)) / 0.5);
+      const yankFade = Math.min(1, Math.hypot(u,w)/25) * swing;
+      const yankBX = (Ftx*cth + Fty*sth)*yankFade, yankBY = (-Ftx*sth + Fty*cth)*yankFade;   // -> car body frame
+      const yankTau = d*(sth*Ftx - cth*Fty)*yankFade;       // r_hitch x F  (r=-d*heading)
 
       // --- car longitudinal + lateral tyres ---
       let Fx = throttle*DRIVE - reverse*REV;
@@ -496,8 +513,7 @@ import { createScene } from './render3d.js';
       st.v=u; st.vlat=w; st.omega=om;
       st.x = cogx - LR*c2; st.y = cogy - LR*s2;             // back to rear-axle reference
 
-      // --- integrate the trailer (torque about hitch + damping toward co-rotation) ---
-      const omTdot = (-draw_d*Flat)/IT - DAMP_T*(st.omegaT - om);
+      // --- integrate the trailer (omTdot computed above) ---
       st.omegaT += omTdot*h;
       st.phi += st.omegaT*h;
       const rel=norm(st.theta-st.phi);
