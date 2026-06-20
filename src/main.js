@@ -609,11 +609,11 @@ import { createScene } from './render3d.js';
       const bk=52;
       const wvx = st.v*Math.cos(rs.theta) - st.vlat*Math.sin(rs.theta);
       const wvy = st.v*Math.sin(rs.theta) + st.vlat*Math.cos(rs.theta);
-      tx = rs.x - bk*Math.cos(rs.theta) + wvx*0.07;
-      ty = rs.y - bk*Math.sin(rs.theta) + wvy*0.07;
+      tx = rs.x - bk*Math.cos(rs.theta) + wvx*0.10;
+      ty = rs.y - bk*Math.sin(rs.theta) + wvy*0.10;
     } else { tx=(frontX+trAxX)/2; ty=(frontY+trAxY)/2; }
-    cam.x+=(tx-cam.x)*0.11; cam.y+=(ty-cam.y)*0.11;        // looser follow -> the rig moves within the frame
-    if(rotateFollow) camRot += norm((-Math.PI/2 - rs.theta) - camRot)*0.075;  // rotation lags -> car visibly turns/slides in frame
+    cam.x+=(tx-cam.x)*0.07; cam.y+=(ty-cam.y)*0.07;        // looser follow -> the rig moves within the frame
+    if(rotateFollow) camRot += norm((-Math.PI/2 - rs.theta) - camRot)*0.048;  // rotation lags -> car visibly turns/slides in frame
 
     // trails: sample the interpolated wheel positions
     if(trailsOn && !dead){ pushTrail(trails.front,frontX,frontY); pushTrail(trails.rear,rs.x,rs.y); pushTrail(trails.trailer,trAxX,trAxY); }
