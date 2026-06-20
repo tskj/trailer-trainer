@@ -268,64 +268,49 @@ function boxMesh(material, sx, sy, sz, x, y, z, rotY = 0) {
 }
 
 function buildCar(G) {
-  // A stubby, chunky bubble-car. Different construction from before: a low body
-  // block topped by a ROUNDED DOME CANOPY (low-poly cylinders along the car axis)
-  // — dark front half = wraparound windshield, cream rear half = roof. The dome
-  // reads instantly as a cute car from the high chase + top-down cameras, and the
-  // short wheelbase keeps it compact between the axles.
+  // Low-poly Beetle/Mini bubble-car. The whole shape is rounded — a faceted body
+  // shell (one continuous hood->roof->tail bulge), a dark glassy cabin dome and a
+  // small cream roof cap blended into it, round headlight "eyes", little fender
+  // bulges over fat wheels. No box-with-a-thing-on-top, so no "pill".
   const group = new THREE.Group();
   const bodyMat  = mat(COL.carBody, { r: 0.45, m: 0.12 });
   const roofMat  = mat(COL.carRoof, { r: 0.5, m: 0.05 });
-  const glassMat = mat(COL.glass, { r: 0.08, m: 0.55, flat: false });
+  const glassMat = mat(COL.glass, { r: 0.06, m: 0.6 });
   const wheelMat = mat(COL.wheel, { r: 0.78, flat: false });
   const hubMat   = mat(COL.hub, { r: 0.4, m: 0.5, flat: false });
   const chromeMat= mat(COL.chrome, { r: 0.3, m: 0.75 });
-  const headMat  = emat(COL.headlight, 1.1);
+  const headMat  = emat(COL.headlight, 1.2);
   const tailMat  = emat(COL.taillight, 0.95);
 
   const len = 2 * G.CAR_HL, wid = G.carW, wheelR = G.wheelL / 2 + 1.5, yb = wheelR;
   const frontX = G.CAR_CTR + G.CAR_HL, rearX = G.CAR_CTR - G.CAR_HL, cx = G.CAR_CTR;
 
-  // --- body: a low block + a slightly inset upper block (a soft belt line) ---
-  const lowH = 7, upH = 5;
-  const lower = new THREE.Mesh(new THREE.BoxGeometry(len, lowH, wid), bodyMat);
-  lower.position.set(cx, yb + lowH / 2, 0); lower.castShadow = lower.receiveShadow = true;
-  const upper = new THREE.Mesh(new THREE.BoxGeometry(len * 0.92, upH, wid * 0.92), bodyMat);
-  upper.position.set(cx, yb + lowH + upH / 2, 0); upper.castShadow = true;
-  group.add(lower, upper);
-
-  // --- rounded dome canopy: two butted cylinders along X (faceted, low-poly) ---
-  const bodyTop = yb + lowH + upH;
-  const R = wid * 0.28, cabLen = len * 0.54, cabCx = cx - len * 0.02;
-  const mkDome = (l, mtl, xc) => {
-    const c = new THREE.Mesh(new THREE.CylinderGeometry(R, R, l, 12), mtl);
-    c.rotation.z = Math.PI / 2;                 // axis -> X (rounded profile faces front)
-    c.position.set(xc, bodyTop, 0); c.castShadow = true; return c;
+  // faceted scaled-sphere helper (rx,ry,rz are radii)
+  const dome = (mtl, rx, ry, rz, x, y, z = 0, wseg = 14, hseg = 10) => {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(1, wseg, hseg), mtl);
+    m.scale.set(rx, ry, rz); m.position.set(x, y, z);
+    m.castShadow = true; m.receiveShadow = true; group.add(m); return m;
   };
-  const wsLen = cabLen * 0.64, roofLen = cabLen * 0.36;        // big dark greenhouse + small cream roof cap
-  const ws = mkDome(wsLen, glassMat, cabCx + cabLen / 2 - wsLen / 2);
-  const roof = mkDome(roofLen, roofMat, cabCx - cabLen / 2 + roofLen / 2);
-  // round-off the front nose of the windshield + flat dark rear window cap
-  const nose = new THREE.Mesh(new THREE.SphereGeometry(R, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2), glassMat);
-  nose.rotation.z = -Math.PI / 2; nose.position.set(cabCx + cabLen / 2, bodyTop, 0);
-  const rwCap = new THREE.Mesh(new THREE.SphereGeometry(R, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2), roofMat);
-  rwCap.rotation.z = Math.PI / 2; rwCap.position.set(cabCx - cabLen / 2, bodyTop, 0);
-  group.add(ws, roof, nose, rwCap);
 
-  // --- round headlights + taillights + chrome bumpers ---
-  const lampGeo = new THREE.CylinderGeometry(2.8, 2.8, 2.2, 12);
+  // rounded body shell — one continuous bulge spanning the footprint
+  dome(bodyMat, len * 0.52, 12, wid * 0.52, cx, yb + 4.5);
+  // dark window band, then a cream roof dome sitting on top of it (two-tone greenhouse)
+  dome(glassMat, len * 0.31, 7.5, wid * 0.45, cx - len * 0.05, yb + 10);
+  dome(roofMat, len * 0.27, 6.5, wid * 0.40, cx - len * 0.07, yb + 14);
+
+  // round headlight "eyes" + taillights (slightly squashed discs facing out)
+  const lamp = new THREE.SphereGeometry(2.9, 10, 8);
   for (const z of [-wid * 0.30, wid * 0.30]) {
-    const hl = new THREE.Mesh(lampGeo, headMat); hl.rotation.z = Math.PI / 2;
-    hl.position.set(frontX - 0.3, yb + lowH * 0.7, z); group.add(hl);
-    const tl = new THREE.Mesh(lampGeo, tailMat); tl.rotation.z = Math.PI / 2;
-    tl.position.set(rearX + 0.3, yb + lowH * 0.7, z); group.add(tl);
+    const hl = new THREE.Mesh(lamp, headMat); hl.scale.set(0.6, 1, 1); hl.position.set(frontX - 2.5, yb + 6, z); group.add(hl);
+    const tl = new THREE.Mesh(lamp, tailMat); tl.scale.set(0.6, 0.9, 1); tl.position.set(rearX + 2.5, yb + 6.5, z); group.add(tl);
   }
-  const fB = new THREE.Mesh(new THREE.BoxGeometry(3.5, 4.5, wid * 0.96), chromeMat);
-  fB.position.set(frontX - 0.6, yb + 2.6, 0); fB.castShadow = true; group.add(fB);
-  const rB = new THREE.Mesh(new THREE.BoxGeometry(3.5, 4.5, wid * 0.96), chromeMat);
-  rB.position.set(rearX + 0.6, yb + 2.6, 0); rB.castShadow = true; group.add(rB);
+  // chrome bumpers
+  const fB = new THREE.Mesh(new THREE.BoxGeometry(3.5, 4.5, wid * 0.86), chromeMat);
+  fB.position.set(frontX - 2, yb + 2.6, 0); fB.castShadow = true; group.add(fB);
+  const rB = new THREE.Mesh(new THREE.BoxGeometry(3.5, 4.5, wid * 0.86), chromeMat);
+  rB.position.set(rearX + 2, yb + 2.6, 0); rB.castShadow = true; group.add(rB);
 
-  // --- chunky wheels at the axles (front pair steers) ---
+  // chunky wheels at the axles (front pair steers) + little fender bulges
   const wheelGeo = new THREE.CylinderGeometry(wheelR, wheelR, G.wheelW + 4, 14);
   const hubGeo = new THREE.CylinderGeometry(wheelR * 0.4, wheelR * 0.4, G.wheelW + 4.4, 8);
   const frontWheels = [];
@@ -335,6 +320,7 @@ function buildCar(G) {
     const hub = new THREE.Mesh(hubGeo, hubMat); hub.rotation.x = Math.PI / 2;
     w.add(tire, hub); w.position.set(x, wheelR, z); group.add(w);
     if (steer) frontWheels.push(w);
+    dome(bodyMat, wheelR * 1.35, wheelR * 1.0, (G.wheelW + 5) / 2, x, wheelR + 1.5, z > 0 ? wid * 0.42 : -wid * 0.42, 10, 6);
   };
   mkWheel(0, -G.carTrack / 2, false); mkWheel(0, G.carTrack / 2, false);
   mkWheel(G.L, -G.carTrack / 2, true); mkWheel(G.L, G.carTrack / 2, true);
