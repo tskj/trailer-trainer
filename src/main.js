@@ -29,10 +29,11 @@ import { createScene } from './render3d.js';
   const LR=L*0.45, LF=L-LR, IZ=360, YAW_DAMP=2.2;   // COG offsets, yaw inertia, spin damping
   // ---- trailer tyre: grips at parking speed (~old kinematic feel), slides at the
   //      limit; braking locks its wheel so it fishtails on the brakes ----
-  const GRIP_T=90, KT=8.0, IT=500, DAMP_T=2.6, TBRAKE_GRIP=0.22, TBRAKE_LOCK=0.05;
+  const GRIP_T=105, KT=8.0, IT=500, DAMP_T=3.0, TBRAKE_GRIP=0.22, TBRAKE_LOCK=0.05;
+  const SWAY=0.075;                                 // speed*angle destabiliser: trailer sways unstable above a critical speed
   // two-way coupling: the trailer's MASS (not just its tyre force) reacts on the car
   // at the hitch, so a swinging / whipping trailer drags the car around (tail wags dog)
-  const M_T=0.85, YANK_MAX=680;
+  const M_T=1.0, YANK_MAX=700;
   // ---- steering: no auto-centre, so a set turn radius is held ----
   const MAX_STEER=36*Math.PI/180;
   // keyboard steering mirrors the throttle: force + viscous drag + coulomb return,
@@ -475,9 +476,14 @@ import { createScene } from './render3d.js';
       // omegaT^2). The mass term is what drags the car when the trailer whips out,
       // even with no trailer grip — the tail wagging the dog.
       const wt = st.omegaT;
-      const omTdot = (-draw_d*Flat)/IT - DAMP_T*(wt - om);  // trailer angular accel
-      let Ftx = -Flat*sph - M_T*omTdot*draw_d*sph - M_T*wt*wt*draw_d*cph;
-      let Fty =  Flat*cph + M_T*omTdot*draw_d*cph - M_T*wt*wt*draw_d*sph;
+      // angular accel: tyre restoring + co-rotation damping + a speed*swing
+      // destabiliser (the sway mode: stable slow, diverges -> slides out fast)
+      const omTdot = (-draw_d*Flat)/IT - DAMP_T*(wt - om) - SWAY*Math.hypot(u,w)*Math.sin(norm(st.theta-st.phi));
+      // car-yank = trailer tyre force + centripetal reaction of the trailer mass
+      // (pulls the car toward the swung trailer). No tangential/omTdot term — it
+      // was a derivative feedback that made the rig sway-resonate instead of slide.
+      let Ftx = -Flat*sph - M_T*wt*wt*draw_d*cph;
+      let Fty =  Flat*cph - M_T*wt*wt*draw_d*sph;
       const ymag = Math.hypot(Ftx,Fty); if(ymag>YANK_MAX){ const k=YANK_MAX/ymag; Ftx*=k; Fty*=k; }
       // gate the yank by speed (no yank at a parking crawl) AND by how far the trailer
       // has swung out (near-aligned -> car grips normally; swung -> it drags hard)
