@@ -27,6 +27,9 @@ import { createScene } from './render3d.js';
   //      limit -> follows the heading like before; past it -> slides/drifts) ----
   const GRIP_F=192, GRIP_R=150, KSTIFF=9.0;         // rear grips less -> tail steps out (oversteer)
   const LR=L*0.45, LF=L-LR, IZ=300, YAW_DAMP=1.7;   // COG offsets, yaw inertia, spin damping (catchable drift)
+  // ---- trailer tyre: grips at parking speed (~old kinematic feel), slides at the
+  //      limit; braking locks its wheel so it fishtails on the brakes ----
+  const GRIP_T=125, KT=8.0, IT=550, DAMP_T=4.5, TBRAKE_GRIP=0.3;
   // ---- steering: no auto-centre, so a set turn radius is held ----
   const MAX_STEER=36*Math.PI/180;
   // keyboard steering mirrors the throttle: force + viscous drag + coulomb return,
@@ -239,9 +242,9 @@ import { createScene } from './render3d.js';
       actx = actx || new (window.AudioContext||window.webkitAudioContext)();
       if(actx.state==="suspended") actx.resume();
       const master=actx.createGain(); master.gain.value=0.0; master.connect(actx.destination);
-      const oscs=[1,2,3.5].map((mult,i)=>{
-        const o=actx.createOscillator(); o.type=i===0?"sawtooth":"square"; o.frequency.value=50*mult;
-        const g=actx.createGain(); g.gain.value=[0.5,0.28,0.14][i];
+      const oscs=[1,2,3].map((mult,i)=>{
+        const o=actx.createOscillator(); o.type=["sawtooth","square","triangle"][i]; o.frequency.value=35*mult;
+        const g=actx.createGain(); g.gain.value=[0.5,0.24,0.1][i];   // softer high harmonic
         o.connect(g); g.connect(master); o.start(); return {o,mult};
       });
       // looping noise -> bandpass: the bulk of the "engine feel" per the talk
@@ -257,11 +260,13 @@ import { createScene } from './render3d.js';
   function updateEngine(speed, throttleAmt){
     if(!engine||!actx) return;
     const t=actx.currentTime, sp=Math.abs(speed), load=Math.min(1,Math.abs(throttleAmt)), rev=Math.min(1,sp/MAX_SPEED);
-    const f0=46 + sp*1.5 + load*22;                      // base firing frequency from "rpm"
+    // low, growly firing frequency: gentle rise with speed (sqrt-compressed so the
+    // top end rumbles instead of screaming), small throttle blip
+    const f0=30 + Math.sqrt(sp)*3.3 + load*7;            // idle ~30Hz, max ~85Hz
     for(const {o,mult} of engine.oscs) o.frequency.setTargetAtTime(f0*mult, t, 0.06);
-    engine.nf.frequency.setTargetAtTime(280 + sp*7, t, 0.06);
-    engine.ng.gain.setTargetAtTime(0.2*(0.35+0.65*load), t, 0.08);
-    engine.master.gain.setTargetAtTime(0.045*(0.4+0.6*rev+0.5*load), t, 0.08);
+    engine.nf.frequency.setTargetAtTime(150 + sp*1.8, t, 0.06);
+    engine.ng.gain.setTargetAtTime(0.2*(0.4+0.6*load), t, 0.08);
+    engine.master.gain.setTargetAtTime(0.05*(0.45+0.55*rev+0.4*load), t, 0.08);
   }
 
   // ---- input ----
@@ -317,7 +322,7 @@ import { createScene } from './render3d.js';
   function snapshot(){ return {x:st.x,y:st.y,theta:st.theta,phi:st.phi,delta:st.delta,
     tf:trails.front.length,tr:trails.rear.length,tt:trails.trailer.length}; }
   function restore(s){
-    st.x=s.x; st.y=s.y; st.theta=s.theta; st.phi=s.phi; st.delta=s.delta; st.v=0; st.vlat=0; st.omega=0;
+    st.x=s.x; st.y=s.y; st.theta=s.theta; st.phi=s.phi; st.delta=s.delta; st.v=0; st.vlat=0; st.omega=0; st.omegaT=0;
     trails.front.length=Math.min(trails.front.length,s.tf);
     trails.rear.length =Math.min(trails.rear.length, s.tr);
     trails.trailer.length=Math.min(trails.trailer.length,s.tt);
@@ -326,7 +331,7 @@ import { createScene } from './render3d.js';
   function loadLevel(i){
     levelIdx=i; level=LEVELS[i];
     const s=level.start;
-    st={x:s.x,y:s.y,theta:s.th,phi:s.th,delta:0,v:0,vlat:0,omega:0};
+    st={x:s.x,y:s.y,theta:s.th,phi:s.th,delta:0,v:0,vlat:0,omega:0,omegaT:0};
     if(level.perturb){ const sgn=Math.random()<0.5?-1:1; st.phi = s.th + sgn*(level.perturb + Math.random()*0.06); }
     if(level.lateral){ const sgn=Math.random()<0.5?-1:1, d=sgn*level.lateral*(0.55+Math.random()*0.45);
       st.x += -Math.sin(s.th)*d; st.y += Math.cos(s.th)*d; }
@@ -470,15 +475,26 @@ import { createScene } from './render3d.js';
       st.v=u; st.vlat=w; st.omega=om;
       st.x = cogx - LR*c2; st.y = cogy - LR*s2;              // back to rear-axle reference
 
-      // trailer: kinematic, driven by the real hitch velocity (identical to the old
-      // constraint in pure fwd/rev; swings naturally when the hitch moves sideways)
+      // trailer: dynamic single axle with its own slip tyre. Grips at parking speed
+      // (~old kinematic feel) but can lose traction and fishtail; braking locks the
+      // trailer wheel (less grip) so it drifts on the brakes.
       const d = LR + hitchC;
       const Vhx = wvx + om*d*s2, Vhy = wvy - om*d*c2;        // hitch world velocity
-      const dph = (Vhy*Math.cos(st.phi) - Vhx*Math.sin(st.phi))/draw_d;
-      st.phi += dph*h;
+      const cph=Math.cos(st.phi), sph=Math.sin(st.phi);
+      // trailer wheel velocity = hitch vel + omegaT x (wheel - hitch),  wheel = hitch - draw_d*heading
+      const twx = Vhx + st.omegaT*draw_d*sph;
+      const twy = Vhy - st.omegaT*draw_d*cph;
+      const vFwdT = twx*cph + twy*sph, vLatT = -twx*sph + twy*cph;
+      const fadeT = Math.min(1, Math.hypot(vFwdT,vLatT)/3);
+      const aT = Math.atan2(vLatT, Math.max(Math.abs(vFwdT), 3));
+      const gT = GRIP_T*(braking ? TBRAKE_GRIP : 1);        // brakes lock the wheel -> drift
+      const Flat = -gT*fadeT*Math.tanh(KT*aT);              // lateral tyre force (opposes slip)
+      const omTdot = (-draw_d*Flat)/IT - DAMP_T*(st.omegaT - om);  // torque + damping toward co-rotation
+      st.omegaT += omTdot*h;
+      st.phi += st.omegaT*h;
       const rel=norm(st.theta-st.phi);
-      if(rel> MAX_ARTIC) st.phi=st.theta-MAX_ARTIC;
-      if(rel<-MAX_ARTIC) st.phi=st.theta+MAX_ARTIC;
+      if(rel> MAX_ARTIC){ st.phi=st.theta-MAX_ARTIC; st.omegaT=om; }
+      if(rel<-MAX_ARTIC){ st.phi=st.theta+MAX_ARTIC; st.omegaT=om; }
     }
 
     // highscore tracking: rear-axle distance (integral of |v|), and time from first motion until cleared
@@ -748,5 +764,5 @@ import { createScene } from './render3d.js';
   requestAnimationFrame(frame);
 
   // debug telemetry hook (read by test scripts)
-  window.__tt = () => ({ v:st.v, vlat:st.vlat, om:st.omega, delta:st.delta, theta:st.theta, phi:st.phi });
+  window.__tt = () => ({ v:st.v, vlat:st.vlat, om:st.omega, omT:st.omegaT, delta:st.delta, artic:norm(st.theta-st.phi)*57.3 });
 })();
