@@ -44,7 +44,7 @@ const COL = {
   cone:      '#ff8c1a',
   coneBand:  '#fff4e0',
   coneHit:   '#7e8590',
-  ground:    '#7e8aa1',  // desaturated slate so colors pop
+  ground:    '#d6d1c5',  // bright, near-neutral warm concrete tarmac in the sun
   wall:      '#9aa6bd',
   region:    '#6d7891',
   bay:       '#f2c44d',
@@ -121,8 +121,42 @@ export function createScene(canvas, G) {
   const coneMat    = new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.cone), roughness: 0.55, metalness: 0.0, flatShading: true });
   const coneHitMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.coneHit), roughness: 0.85, metalness: 0.0, flatShading: true });
   const bandMat    = new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.coneBand), roughness: 0.5, emissive: new THREE.Color('#3a2a10'), emissiveIntensity: 0.4 });
-  const wallMat    = new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.wall), roughness: 0.9, metalness: 0.0, flatShading: true });
-  const regionMat  = new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.region), roughness: 0.95, metalness: 0.0, flatShading: true });
+  // out-of-bounds keep-out zones are painted as a flat diagonal hatch on the tarmac
+  // (no 3D walls). Computed in a fragment shader from WORLD x/z, so — like the SVG
+  // <pattern patternUnits="userSpaceOnUse"> in the original PoC — it's ONE continuous
+  // global hatch with no tiling seams / per-tile staggering, fwidth-antialiased so it
+  // stays crisp at any zoom.
+  const hatchMat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -3,
+    extensions: { derivatives: true },
+    uniforms: {
+      uPeriod: { value: 11.3 },                                            // world units per diagonal stripe cycle (~8u perpendicular, like the PoC)
+      uDuty:   { value: 0.5 },                                             // half line / half gap (the 4-of-8 SVG line)
+      uFill:   { value: new THREE.Color('#6c604a') }, uFillA: { value: 0.22 },
+      uLine:   { value: new THREE.Color('#3c3224') }, uLineA: { value: 0.5 },
+    },
+    vertexShader: `
+      varying vec2 vW;
+      void main(){
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vW = wp.xz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }`,
+    fragmentShader: `
+      varying vec2 vW;
+      uniform float uPeriod, uDuty, uFillA, uLineA;
+      uniform vec3 uFill, uLine;
+      void main(){
+        float d  = (vW.x + vW.y) / uPeriod;    // diagonal coordinate (vW.y is world z)
+        float f  = fract(d);
+        float aa = fwidth(d);                  // d is continuous -> no glitch at the wrap
+        float m  = 1.0 - smoothstep(uDuty*0.5 - aa, uDuty*0.5 + aa, abs(f - 0.5));
+        gl_FragColor = vec4(mix(uFill, uLine, m), mix(uFillA, uLineA, m));
+      }`,
+  });
+  // crisp boundary line around each keep-out region (like the SVG stroke in the PoC)
+  const edgeMat = new THREE.LineBasicMaterial({ color: new THREE.Color('#3a3020') });
 
   // trails
   const trailObjs = {
@@ -194,21 +228,32 @@ export function createScene(canvas, G) {
         g.position.set(o.x, 0, o.y);
         dyn.add(g);
         o._m = body; o._mBand = band; o._mBase = base;   // for coneHit swap
-      } else if (o.t === 'wall') {
-        const m = new THREE.Mesh(new THREE.BoxGeometry(o.hl * 2, WALL_H, o.hw * 2), wallMat);
-        m.position.set(o.x, WALL_H / 2, o.y); m.rotation.y = -o.ang;
-        m.castShadow = true; m.receiveShadow = true; dyn.add(m);
-      } else if (o.t === 'disc') {
-        const m = new THREE.Mesh(new THREE.CylinderGeometry(o.r, o.r, WALL_H, 28), regionMat);
-        m.position.set(o.cx, WALL_H / 2, o.cy); m.castShadow = true; m.receiveShadow = true; dyn.add(m);
-      } else if (o.t === 'half' || o.t === 'quad') {
-        const pts = regionPolygon(o);
+      } else if (o.t === 'wall' || o.t === 'disc' || o.t === 'half' || o.t === 'quad') {
+        // every keep-out shape -> a flat hatched polygon lying on the tarmac
+        let pts = null;
+        if (o.t === 'wall') {
+          const ca = Math.cos(o.ang), sa = Math.sin(o.ang);
+          const cn = (lx, lz) => [o.x + lx * ca - lz * sa, o.y + lx * sa + lz * ca];
+          pts = [cn(-o.hl, -o.hw), cn(o.hl, -o.hw), cn(o.hl, o.hw), cn(-o.hl, o.hw)];
+        } else if (o.t === 'disc') {
+          pts = [];
+          const N = 48;
+          for (let i = 0; i < N; i++) { const a = i / N * Math.PI * 2; pts.push([o.cx + o.r * Math.cos(a), o.cy + o.r * Math.sin(a)]); }
+        } else {
+          pts = regionPolygon(o);
+        }
         if (pts) {
           const shape = new THREE.Shape(pts.map(p => new THREE.Vector2(p[0], -p[1])));  // -y => world +z
-          const geo = new THREE.ExtrudeGeometry(shape, { depth: WALL_H, bevelEnabled: false });
+          const geo = new THREE.ShapeGeometry(shape);
           geo.rotateX(-Math.PI / 2);
-          const m = new THREE.Mesh(geo, regionMat);
-          m.castShadow = true; m.receiveShadow = true; dyn.add(m);
+          const m = new THREE.Mesh(geo, hatchMat);
+          m.position.y = 0.16;             // just above ground/grid, below the bay pad (0.25)
+          m.receiveShadow = true; dyn.add(m);
+          // outline the region edge so the hatch reads as a clearly bordered zone
+          const edge = new THREE.LineLoop(
+            new THREE.BufferGeometry().setFromPoints(pts.map(p => new THREE.Vector3(p[0], 0.2, p[1]))),
+            edgeMat);
+          dyn.add(edge);
         }
       }
     }
@@ -277,9 +322,20 @@ export function createScene(canvas, G) {
     const w = canvas.clientWidth, h = canvas.clientHeight;
     return { x: (v.x * 0.5 + 0.5) * w, y: (-v.y * 0.5 + 0.5) * h, visible: v.z < 1 && Math.abs(v.x) <= 1 && Math.abs(v.y) <= 1, behind: v.z >= 1 };
   }
+  // robust aim toward a world ground point (x,y): whether it's comfortably on-screen,
+  // plus a screen-space direction (y-down) taken from camera/view space so it stays
+  // correct even when the point is behind the camera (no projection sign-flip glitches).
+  function aim(x, y) {
+    const t = new THREE.Vector3(x, 8, y);
+    const vp = t.clone().applyMatrix4(camera.matrixWorldInverse);   // camera space: looks down -Z
+    const ndc = t.project(camera);
+    const inFront = vp.z < 0;
+    const onscreen = inFront && Math.abs(ndc.x * OVERSCAN) < 0.94 && Math.abs(ndc.y * OVERSCAN) < 0.94;
+    return { onscreen, dirx: vp.x, diry: -vp.y };
+  }
 
   resize();
-  return { renderer, scene, camera, resize, buildLevel, coneHit, update, project, updateSkids, clearSkids, skidCountDbg: () => skidVerts.length/18 };
+  return { renderer, scene, camera, resize, buildLevel, coneHit, update, project, aim, updateSkids, clearSkids, skidCountDbg: () => skidVerts.length/18 };
 }
 
 // =========================================================================
@@ -520,9 +576,9 @@ function makeSky() {
 }
 
 function makeGrid() {
-  const grid = new THREE.GridHelper(24000, 400, new THREE.Color('#46505f'), new THREE.Color('#46505f'));
+  const grid = new THREE.GridHelper(24000, 400, new THREE.Color('#9a8f7b'), new THREE.Color('#9a8f7b'));
   grid.position.y = 0.02;
-  grid.material.transparent = true; grid.material.opacity = 0.35;
+  grid.material.transparent = true; grid.material.opacity = 0.28;   // warm expansion-joint lines in the concrete
   return grid;
 }
 

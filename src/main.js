@@ -21,19 +21,17 @@ import { createScene } from './render3d.js';
   const MAX_ARTIC    = 82*Math.PI/180;   // hard clamp (just beyond, as a backstop)
 
   // ---- engine / longitudinal (acceleration units, mass = 1; top speed ~ DRIVE/DRAG_L) ----
-  const DRIVE=400, REV=90, BRAKE=520, DRAG_L=1.05, ROLL_L=16;   // terminal ~380 (much faster)
-  const MAX_SPEED=440;                              // safety clamp
-  // ---- tyres: lateral grip is a saturating slip-angle force (grip below the
-  //      limit -> follows the heading like before; past it -> slides/drifts) ----
-  const GRIP_F=195, GRIP_R=205, KSTIFF=9.0, REAR_LONG=0.0;  // grippy + no power-oversteer -> the car stays planted
+  // gentle: low force + low drag -> slow off the line, climbs slowly to a modest
+  // top speed (~120). Forward is mostly for repositioning now.
+  const DRIVE=55, REV=33, BRAKE=160, DRAG_L=0.45, ROLL_L=8;
+  const MAX_SPEED=180;                              // safety clamp
+  // ---- tyres: very grippy now (precision parking focus) — the car holds its line
+  //      and never slides/drifts from its own inputs ----
+  const GRIP_F=380, GRIP_R=380, KSTIFF=9.0, REAR_LONG=0.0;
   const LR=L*0.45, LF=L-LR, IZ=360, YAW_DAMP=2.2;   // COG offsets, yaw inertia, spin damping
-  // ---- trailer tyre: grips at parking speed (~old kinematic feel), slides at the
-  //      limit; braking locks its wheel so it fishtails on the brakes ----
-  const GRIP_T=105, KT=8.0, IT=500, DAMP_T=3.0, TBRAKE_GRIP=0.22, TBRAKE_LOCK=0.05;
-  const SWAY=0.075;                                 // speed*angle destabiliser: trailer sways unstable above a critical speed
-  // two-way coupling: the trailer's MASS (not just its tyre force) reacts on the car
-  // at the hitch, so a swinging / whipping trailer drags the car around (tail wags dog)
-  const M_T=1.0, YANK_MAX=700;
+  // ---- trailer: KINEMATIC no-slip rolling constraint (see step()). No tyre/grip
+  //      constants — the wheel can't slip sideways, so it tracks cleanly at any speed
+  //      and reverse folds toward a jackknife (JACK_TRIGGER) if you don't correct. ----
   // ---- steering: no auto-centre, so a set turn radius is held ----
   const MAX_STEER=36*Math.PI/180;
   // keyboard steering mirrors the throttle: force + viscous drag + coulomb return,
@@ -41,7 +39,7 @@ import { createScene } from './render3d.js';
   const STEER_FORCE=1.2, STEER_DRAG=1.6, STEER_ROLL=0.05;
 
   // ---- rewind double-buffer ----
-  const SAMPLE_INTERVAL=1.5, DEAD_TIME=1.0;
+  const SAMPLE_INTERVAL=1.5, DEAD_TIME=2.0;   // linger on the fail screen a bit longer before rewinding
 
   // ---- bays sized to the actual rig footprint ----
   const BAY = {
@@ -67,56 +65,55 @@ import { createScene } from './render3d.js';
       goal:"Sandbox — practice turning and backing. Turn trails on to see how each wheel path cuts inside the one ahead.",
       start:{x:0,y:0,th:-Math.PI/2}, bay:null, obstacles:[] },
 
-    { id:"intro", name:"1 · Roll-up",
-      goal:"Easy start: drive forward, thread between the cones, and roll the trailer onto the pad — then stop with it sitting square. No walls here; clipping a cone is just a fault.",
-      start:{x:-300,y:0,th:0}, lateral:26,
-      bay:{x:150,y:0,ang:0,fit:"trailer"},
-      obstacles:[ {t:"cone",x:-150,y:-34},{t:"cone",x:-150,y:34},
-                  {t:"cone",x:-40,y:-34},{t:"cone",x:-40,y:34},
-                  {t:"cone",x:70,y:-34},{t:"cone",x:70,y:34} ] },
-
-    { id:"sweep", name:"2 · Short sweep",
-      goal:"Follow the curve — one slow 90° turn around the inside corner — and ease the trailer onto the pad at the exit. Touch the wall and you rewind.",
-      start:{x:-420,y:200,th:-Math.PI/2},
-      bay:{x:175,y:-398,ang:0,fit:"trailer"},
-      obstacles:[ {t:"quad",ex:-360,ey:-360,ccx:0,ccy:0,r:360,mode:"in",n:8} ] },
-
-    { id:"roundabout", name:"3 · Roundabout",
-      goal:"Drive up to the roundabout and take it counter-clockwise — around the island the long way to the exit on the left, then ease the trailer onto the pad. Cutting the corner clips the cone.",
-      start:{x:0,y:360,th:-Math.PI/2},
-      bay:{x:-340,y:0,ang:0,fit:"trailer"},
-      obstacles:[ {t:"disc",cx:0,cy:0,r:85,mode:"in"},
-                  {t:"quad",ex:110,ey:110,ccx:270,ccy:270,r:160,mode:"in",n:8},
-                  {t:"quad",ex:110,ey:110,ccx:270,ccy:270,r:160,mode:"in",n:8,flipx:true},
-                  {t:"cone",x:-120,y:95} ] },
-
-    { id:"sweepLong", name:"4 · Long sweep",
-      goal:"The same turn, 3.5\u00d7 bigger: a long, sustained sweep around a far larger corner. Keep it smooth and ease the trailer onto the pad.",
-      start:{x:-1320,y:-700,th:-Math.PI/2},
-      bay:{x:-700,y:-1298,ang:0,fit:"trailer"},
-      obstacles:[ {t:"quad",ex:-1260,ey:-1260,ccx:0,ccy:0,r:1260,mode:"in",n:8} ] },
-
-    { id:"l1", name:"5 · Straight back-in",
-      goal:"Your first reverse. The trailer starts slightly kinked, so you can't back dead straight — steer to line it up and back it to the wall. Clip a corner cone and it's a fault; ram the wall and you reset.",
+    { id:"l1", name:"1 · Straight back-in",
+      goal:"Your first reverse. The trailer starts slightly kinked, so you can’t back dead straight — steer to line it up and back it to the wall. Clip a corner cone and it’s a fault; ram the wall and you reset.",
       start:{x:0,y:-220,th:-Math.PI/2}, perturb:0.05,
       bay:{x:0,y:60,ang:Math.PI/2,fit:"trailer"},
       obstacles:[ {t:"half",axis:"y",at:122,sign:1},
                   {t:"cone",x:-40,y:18},{t:"cone",x:40,y:18} ] },
 
-    { id:"l2", name:"6 · Offset back-in",
+    { id:"l2", name:"2 · Offset back-in",
       goal:"The pocket is off to the side. Line the trailer up and back it in square.",
       start:{x:55,y:-400,th:-Math.PI/2},
       bay:{x:150,y:60,ang:Math.PI/2,fit:"trailer"},
       obstacles:[ {t:"half",axis:"y",at:122,sign:1},
                   {t:"cone",x:116,y:18},{t:"cone",x:184,y:18} ] },
 
-    { id:"l3", name:"7 · 90° alley dock",
+    { id:"l3", name:"3 · 90° alley dock",
       goal:"Drive up the lane and PAST the bay, then back in with one continuous 90° turn. The long wall opposite leaves no room to straighten out.",
       start:{x:-310,y:-30,th:0},
       bay:{x:80,y:90,ang:Math.PI/2,fit:"trailer"},
       obstacles:[ {t:"half",axis:"y",at:-129,sign:-1},
                   {t:"half",axis:"y",at:152,sign:1},
                   {t:"cone",x:44,y:48},{t:"cone",x:116,y:48} ] },
+
+    { id:"sweep", name:"4 · Short sweep ↩",
+      goal:"Now in reverse: back the trailer around the bend and ease it up the far leg onto the pad. Keep the trailer off the wall the whole way around.",
+      start:{x:160,y:-398,th:0},
+      bay:{x:-420,y:180,ang:Math.PI/2,fit:"trailer"},
+      obstacles:[ {t:"quad",ex:-360,ey:-360,ccx:0,ccy:0,r:360,mode:"in",n:8} ] },
+
+    { id:"roundabout", name:"5 · Roundabout ↩",
+      goal:"Reverse the trailer around the island and back it onto the pad in the left arm. The island’s on the inside — take it wide.",
+      start:{x:0,y:330,th:Math.PI/2},
+      bay:{x:-340,y:0,ang:0,fit:"trailer"},
+      obstacles:[ {t:"disc",cx:0,cy:0,r:85,mode:"in"},
+                  {t:"quad",ex:110,ey:110,ccx:270,ccy:270,r:160,mode:"in",n:8},
+                  {t:"quad",ex:110,ey:110,ccx:270,ccy:270,r:160,mode:"in",n:8,flipx:true},
+                  {t:"cone",x:-120,y:95},{t:"cone",x:-92,y:62} ] },
+
+    { id:"sweepLong", name:"6 · Long sweep ↩",
+      goal:"The big one, in reverse: back the trailer around the long, sustained bend and up onto the pad at the far end. Slow and smooth.",
+      start:{x:-680,y:-1298,th:0},
+      bay:{x:-1320,y:-720,ang:Math.PI/2,fit:"trailer"},
+      obstacles:[ {t:"quad",ex:-1260,ey:-1260,ccx:0,ccy:0,r:1260,mode:"in",n:8} ] },
+
+    { id:"l5", name:"7 · Parallel park",
+      goal:"Back the trailer into the slot between the two parked cars, parallel to the curb.",
+      start:{x:-160,y:85,th:0},
+      bay:{x:30,y:-12,ang:0,fit:"trailer"},
+      obstacles:[ W(-90,-12,0,30,15), W(150,-12,0,30,15),
+                  {t:"half",axis:"y",at:-49,sign:-1} ] },
 
     { id:"l4", name:"8 · Inside the cut",
       goal:"Turn left into the bay nose-first. The trailer cuts inside the car, so take the corner wide to keep it off the apex cones — but stay inside the walls.",
@@ -127,14 +124,7 @@ import { createScene } from './render3d.js';
                   {t:"half",axis:"y",at:180,sign:1},
                   {t:"half",axis:"y",at:-189,sign:-1} ] },
 
-    { id:"l5", name:"9 · Parallel park",
-      goal:"Back the trailer into the slot between the two parked cars, parallel to the curb.",
-      start:{x:-160,y:85,th:0},
-      bay:{x:30,y:-12,ang:0,fit:"trailer"},
-      obstacles:[ W(-90,-12,0,30,15), W(150,-12,0,30,15),
-                  {t:"half",axis:"y",at:-49,sign:-1} ] },
-
-    { id:"l6", name:"10 · Garage (whole rig)",
+    { id:"l6", name:"9 · Garage (whole rig)",
       goal:"Pull the entire rig — car and trailer — fully inside the garage without clipping the walls.",
       start:{x:0,y:240,th:-Math.PI/2},
       bay:{x:0,y:-30,ang:Math.PI/2,fit:"rig"},
@@ -144,7 +134,7 @@ import { createScene } from './render3d.js';
 
   // ---- state ----
   let st, cam, level, levelIdx, holdT, levelDone, faults, wasCone, hitWall, hitCone, inPosition, fitNow;
-  let dead, deadT, sampleT, snaps, locked=false, camRot=0, thrDisp=0, teleported=false, mouseSteer=false;
+  let dead, deadT, sampleT, snaps, locked=false, camRot=0, thrDisp=0, teleported=false, mouseSteer=false, camSnap=false;
   let rotateFollow=true;
   let runPath=0, runTime=0, runMoving=false, naming=false, pending=null, myEntry=null;
   const completed = new Set();
@@ -192,15 +182,15 @@ import { createScene } from './render3d.js';
       actx = actx || new (window.AudioContext||window.webkitAudioContext)();
       if(actx.state==="suspended") actx.resume();
       const t=actx.currentTime;
-      [70,104].forEach((freq,i)=>{
+      [58,87].forEach((freq,i)=>{
         const o=actx.createOscillator(), g=actx.createGain();
-        o.type="square"; o.frequency.value=freq;
+        o.type="triangle"; o.frequency.value=freq;          // softer than square -> gentler buzz
         o.connect(g); g.connect(actx.destination);
         g.gain.setValueAtTime(0,t);
-        g.gain.linearRampToValueAtTime(0.16,t+0.02);
-        g.gain.setValueAtTime(0.16,t+0.34);
-        g.gain.linearRampToValueAtTime(0,t+0.46);
-        o.start(t); o.stop(t+0.47);
+        g.gain.linearRampToValueAtTime(0.08,t+0.05);         // softer + slower attack
+        g.gain.setValueAtTime(0.08,t+0.5);
+        g.gain.linearRampToValueAtTime(0,t+0.72);            // longer, gentler fade
+        o.start(t); o.stop(t+0.73);
       });
     }catch(e){}
   }
@@ -248,7 +238,7 @@ import { createScene } from './render3d.js';
       const master=actx.createGain(); master.gain.value=0.0; master.connect(actx.destination);
       // master LOWPASS: kills the sharp-edge crackle (low-freq saw/square click on
       // every cycle) and the screaming highs from the shaper -> leaves a deep rumble.
-      const lp=actx.createBiquadFilter(); lp.type="lowpass"; lp.frequency.value=300; lp.Q.value=0.4; lp.connect(master);
+      const lp=actx.createBiquadFilter(); lp.type="lowpass"; lp.frequency.value=180; lp.Q.value=0.4; lp.connect(master);
       // gentle waveshaper for grit (tamed by the lowpass downstream)
       const shaper=actx.createWaveShaper(); shaper.oversample="4x";
       { const n=1024, c=new Float32Array(n), k=2.2; for(let i=0;i<n;i++){ const x=i/(n-1)*2-1; c[i]=Math.tanh(k*x); } shaper.curve=c; }
@@ -258,19 +248,19 @@ import { createScene } from './render3d.js';
       // input (past that a WaveShaper hard-clips flat = crackle); it just gently saturates.
       const bus=actx.createGain(); bus.gain.value=0.42; bus.connect(shaper);
       const lfo=actx.createOscillator(); lfo.type="triangle"; lfo.frequency.value=24;
-      const lfoGain=actx.createGain(); lfoGain.gain.value=0.22; lfo.connect(lfoGain); lfoGain.connect(bus.gain); lfo.start();
+      const lfoGain=actx.createGain(); lfoGain.gain.value=0.30; lfo.connect(lfoGain); lfoGain.connect(bus.gain); lfo.start();
       // sub-octave (sine) + fundamental + harmonics; the lowpass downstream removes
       // the clicky high-frequency edges, so these become a smooth low rumble.
       const oscs=[0.5,1,2,3].map((mult,i)=>{
-        const o=actx.createOscillator(); o.type=["sine","sawtooth","sawtooth","triangle"][i]; o.frequency.value=32*mult;
-        const g=actx.createGain(); g.gain.value=[0.5,0.32,0.15,0.06][i];
+        const o=actx.createOscillator(); o.type=["sine","sawtooth","sawtooth","triangle"][i]; o.frequency.value=20*mult;
+        const g=actx.createGain(); g.gain.value=[0.66,0.34,0.08,0.02][i];   // low-weighted: heavy sub + fundamental, less upper buzz
         o.connect(g); g.connect(bus); o.start(); return {o,mult};
       });
       // low combustion-noise rumble bed (~half the feel per the talk)
       const buf=actx.createBuffer(1,actx.sampleRate,actx.sampleRate), d=buf.getChannelData(0);
       for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
       const noise=actx.createBufferSource(); noise.buffer=buf; noise.loop=true;
-      const nf=actx.createBiquadFilter(); nf.type="lowpass"; nf.frequency.value=140; nf.Q.value=0.7;
+      const nf=actx.createBiquadFilter(); nf.type="lowpass"; nf.frequency.value=85; nf.Q.value=0.7;
       const ng=actx.createGain(); ng.gain.value=0.0;
       noise.connect(nf); nf.connect(ng); ng.connect(bus); noise.start();
       engine={master,oscs,nf,ng,lfo,lp};
@@ -280,13 +270,13 @@ import { createScene } from './render3d.js';
     if(!engine||!actx) return;
     const t=actx.currentTime, sp=Math.abs(speed), load=Math.min(1,Math.abs(throttleAmt)), rev=Math.min(1,sp/MAX_SPEED);
     // firing frequency tuned so the harmonics land in the audible rumble band
-    const f0=30 + Math.sqrt(sp)*2.2 + load*6;            // idle ~30Hz, max ~72Hz
+    const f0=20 + Math.sqrt(sp)*1.5 + load*5;            // idle ~20Hz, max ~41Hz — deeper still
     for(const {o,mult} of engine.oscs) o.frequency.setTargetAtTime(f0*mult, t, 0.06);
-    engine.lfo.frequency.setTargetAtTime(Math.max(9, f0*0.5), t, 0.05);   // V8 lope rate
-    engine.lp.frequency.setTargetAtTime(260 + sp*1.3, t, 0.08);           // deep at idle, brightens a touch with revs
-    engine.nf.frequency.setTargetAtTime(110 + sp*0.8, t, 0.06);
-    engine.ng.gain.setTargetAtTime(0.22*(0.45+0.55*load), t, 0.08);       // rumble bed (combustion noise)
-    engine.master.gain.setTargetAtTime(0.09*(0.45+0.55*rev+0.4*load), t, 0.08);
+    engine.lfo.frequency.setTargetAtTime(Math.max(6, f0*0.45), t, 0.05);  // slow V8 lope = throbbier rumble
+    engine.lp.frequency.setTargetAtTime(175 + sp*0.9, t, 0.08);           // darker: cuts high buzz, leaves low rumble
+    engine.nf.frequency.setTargetAtTime(85 + sp*0.5, t, 0.06);
+    engine.ng.gain.setTargetAtTime(0.28*(0.5+0.5*load), t, 0.08);         // a touch more low combustion rumble
+    engine.master.gain.setTargetAtTime(0.11*(0.45+0.55*rev+0.4*load), t, 0.08);
   }
 
   // ---- input ----
@@ -341,9 +331,14 @@ import { createScene } from './render3d.js';
 
   // ---- snapshots for rewind ----
   function snapshot(){ return {x:st.x,y:st.y,theta:st.theta,phi:st.phi,delta:st.delta,
+    v:st.v,vlat:st.vlat,om:st.omega,omT:st.omegaT,
+    camx:cam.x,camy:cam.y,camrot:camRot,
     tf:trails.front.length,tr:trails.rear.length,tt:trails.trailer.length}; }
   function restore(s){
-    st.x=s.x; st.y=s.y; st.theta=s.theta; st.phi=s.phi; st.delta=s.delta; st.v=0; st.vlat=0; st.omega=0; st.omegaT=0;
+    // full state restore: pose, steering, velocity AND camera all captured from the buffered moment
+    st.x=s.x; st.y=s.y; st.theta=s.theta; st.phi=s.phi; st.delta=s.delta;
+    st.v=s.v; st.vlat=s.vlat; st.omega=s.om; st.omegaT=s.omT;
+    cam={x:s.camx, y:s.camy}; camRot=s.camrot; camSnap=true;   // restore + insta-snap the camera (no animation)
     trails.front.length=Math.min(trails.front.length,s.tf);
     trails.rear.length =Math.min(trails.rear.length, s.tr);
     trails.trailer.length=Math.min(trails.trailer.length,s.tt);
@@ -360,7 +355,7 @@ import { createScene } from './render3d.js';
     runPath=0; runTime=0; runMoving=false; myEntry=null;
     dead=false; deadT=0; sampleT=0;
     trails.front.length=trails.rear.length=trails.trailer.length=0;
-    cam={x:s.x,y:s.y}; camRot = -Math.PI/2 - st.theta;
+    cam={x:s.x,y:s.y}; camRot = -Math.PI/2 - st.theta; camSnap=true;
     snaps=[snapshot()];   // always have at least one fallback
     currState=prevState=captureState(); acc=0; teleported=false;   // reset interpolation
 
@@ -456,10 +451,10 @@ import { createScene } from './render3d.js';
     }
     st.delta = clamp(st.delta, -MAX_STEER, MAX_STEER);
 
-    // dynamic single-track model with a dynamic trailer, TWO-WAY coupled at the
-    // hitch: the car's tyres slide past their grip limit (drift), and the trailer's
-    // tyre force feeds back through the hitch to yank the car around (so a high-speed
-    // fold throws the car instead of ending the run).
+    // dynamic single-track CAR pulling a KINEMATIC (no-slip) trailer. The car has
+    // dynamic tyres; the trailer wheel can't slip sideways, so its angle is driven
+    // purely by the hitch motion — it tracks cleanly at any speed (no low-speed pivot/
+    // slide), and reverse is naturally unstable (fold past JACK_TRIGGER -> jackknife).
     const nsub=Math.max(1,Math.ceil(dt/(1/240))), h=dt/nsub;
     const d = LR + hitchC;                                  // COG -> hitch distance
     for(let i=0;i<nsub;i++){
@@ -467,43 +462,19 @@ import { createScene } from './render3d.js';
       let u=st.v, w=st.vlat, om=st.omega;
       let cogx = st.x + LR*cth, cogy = st.y + LR*sth;        // COG = rear axle + LR forward
 
-      // --- trailer tyre force first, so it can yank the car this substep ---
+      // --- trailer: kinematic no-slip constraint (wheel can't move sideways) ---
+      const cph=Math.cos(st.phi), sph=Math.sin(st.phi);
       const cogvx0=u*cth - w*sth, cogvy0=u*sth + w*cth;      // COG world velocity (start)
       const Vhx = cogvx0 + om*d*sth, Vhy = cogvy0 - om*d*cth; // hitch world velocity
-      const cph=Math.cos(st.phi), sph=Math.sin(st.phi);
-      const twx = Vhx + st.omegaT*draw_d*sph, twy = Vhy - st.omegaT*draw_d*cph;
-      const vFwdT = twx*cph + twy*sph, vLatT = -twx*sph + twy*cph;
-      const fadeT = Math.min(1, Math.hypot(vFwdT,vLatT)/3);
-      const aT = Math.atan2(vLatT, Math.max(Math.abs(vFwdT), 3));
-      const gT = GRIP_T*(tbrake ? TBRAKE_LOCK : (braking ? TBRAKE_GRIP : 1));   // trailer brake locks the wheel -> fishtail
-      const Flat = -gT*fadeT*Math.tanh(KT*aT);              // trailer lateral tyre force (signed)
-      // force the trailer puts on the car at the hitch = its tyre force PLUS the
-      // reaction to its own mass swinging (tangential from omTdot + centripetal from
-      // omegaT^2). The mass term is what drags the car when the trailer whips out,
-      // even with no trailer grip — the tail wagging the dog.
-      const wt = st.omegaT;
-      // angular accel: tyre restoring + co-rotation damping + a speed*swing
-      // destabiliser (the sway mode: stable slow, diverges -> slides out fast)
-      const omTdot = (-draw_d*Flat)/IT - DAMP_T*(wt - om) - SWAY*Math.hypot(u,w)*Math.sin(norm(st.theta-st.phi));
-      // car-yank = trailer tyre force + centripetal reaction of the trailer mass
-      // (pulls the car toward the swung trailer). No tangential/omTdot term — it
-      // was a derivative feedback that made the rig sway-resonate instead of slide.
-      let Ftx = -Flat*sph - M_T*wt*wt*draw_d*cph;
-      let Fty =  Flat*cph - M_T*wt*wt*draw_d*sph;
-      const ymag = Math.hypot(Ftx,Fty); if(ymag>YANK_MAX){ const k=YANK_MAX/ymag; Ftx*=k; Fty*=k; }
-      // gate the yank by speed (no yank at a parking crawl) AND by how far the trailer
-      // has swung out (near-aligned -> car grips normally; swung -> it drags hard)
-      const swing = Math.min(1, Math.abs(norm(st.theta - st.phi)) / 0.5);
-      const yankFade = Math.min(1, Math.hypot(u,w)/25) * swing;
-      const yankBX = (Ftx*cth + Fty*sth)*yankFade, yankBY = (-Ftx*sth + Fty*cth)*yankFade;   // -> car body frame
-      const yankTau = d*(sth*Ftx - cth*Fty)*yankFade;       // r_hitch x F  (r=-d*heading)
+      const omegaTkin = (Vhy*cph - Vhx*sph)/draw_d;          // lateral hitch vel / draw_d -> trailer yaw rate
+      const yankBX = 0, yankBY = 0, yankTau = 0;             // no trailer->car yank in precision mode
 
       // --- car longitudinal + lateral tyres ---
       let Fx = throttle*DRIVE - reverse*REV;
       Fx -= braking*BRAKE*Math.tanh(u*0.4);                 // brake opposes forward motion
       Fx -= DRAG_L*u + ROLL_L*Math.tanh(u*3);               // viscous + coulomb resistance
       const sp = Math.hypot(u,w), den = Math.max(sp,3), su = u>=0?1:-1;
-      const latFade = Math.min(1, sp/3);                    // fade lateral grip at a crawl (avoids jitter)
+      const latFade = Math.min(1, sp/1.2);                  // grip engages just off standstill -> crisp low-speed tracking (only true crawl fades, to avoid jitter)
       const af = Math.atan2(w + LF*om, den) - st.delta*su;
       const ar = Math.atan2(w - LR*om, den);
       const tract = throttle*DRIVE + braking*BRAKE + reverse*REV;
@@ -525,15 +496,18 @@ import { createScene } from './render3d.js';
       st.v=u; st.vlat=w; st.omega=om;
       st.x = cogx - LR*c2; st.y = cogy - LR*s2;             // back to rear-axle reference
 
-      // --- integrate the trailer (omTdot computed above) ---
-      st.omegaT += omTdot*h;
+      // --- integrate the trailer kinematically ---
+      st.omegaT = omegaTkin;
       st.phi += st.omegaT*h;
       const rel=norm(st.theta-st.phi);
       if(rel> MAX_ARTIC){ st.phi=st.theta-MAX_ARTIC; st.omegaT=om; }
       if(rel<-MAX_ARTIC){ st.phi=st.theta+MAX_ARTIC; st.omegaT=om; }
 
-      st._ar=Math.abs(ar); st._gl=gl; st._aT=Math.abs(aT); st._tbrake=tbrake;  // slip metrics for skidmarks
+      st._ar=Math.abs(ar); st._gl=gl; st._aT=0; st._tbrake=false;  // car slip metrics for skidmarks (trailer never slips now)
     }
+
+    // jackknife -> game over: folding past the trigger angle ends the run (rewind)
+    if(Math.abs(norm(st.theta - st.phi)) >= JACK_TRIGGER){ triggerDead("jackknife"); return; }
 
     // highscore tracking: rear-axle distance (integral of |v|), and time from first motion until cleared
     if(level.id!=="free" && !levelDone){
@@ -558,8 +532,7 @@ import { createScene } from './render3d.js';
     if(coneNow&&!wasCone) faults++;
     wasCone=coneNow; hitCone=coneNow;
 
-    // hit a wall -> rewind. A jackknife no longer kills the run: the trailer just
-    // yanks the car around (two-way coupling above), so a fold throws you instead.
+    // hit a wall -> rewind (a jackknife is caught above, before collisions run).
     if(hitWall){ triggerDead("wall"); return; }
 
     fitNow=checkFit(cb,tb);
@@ -617,8 +590,12 @@ import { createScene } from './render3d.js';
       tx = rs.x - bk*Math.cos(rs.theta) + wvx*0.08;
       ty = rs.y - bk*Math.sin(rs.theta) + wvy*0.08;
     } else { tx=(frontX+trAxX)/2; ty=(frontY+trAxY)/2; }
-    cam.x+=(tx-cam.x)*0.07; cam.y+=(ty-cam.y)*0.07;        // looser follow -> the rig moves within the frame
-    if(rotateFollow) camRot += norm((-Math.PI/2 - rs.theta) - camRot)*0.048;  // rotation lags -> car visibly turns/slides in frame
+    if(camSnap){                                           // after a reset / level load: insta-pop, no follow animation
+      cam.x=tx; cam.y=ty; if(rotateFollow) camRot=-Math.PI/2-rs.theta; camSnap=false;
+    } else {
+      cam.x+=(tx-cam.x)*0.07; cam.y+=(ty-cam.y)*0.07;      // looser follow -> the rig moves within the frame
+      if(rotateFollow) camRot += norm((-Math.PI/2 - rs.theta) - camRot)*0.048;  // rotation lags -> car visibly turns/slides in frame
+    }
 
     // trails: sample the interpolated wheel positions
     if(trailsOn && !dead){ pushTrail(trails.front,frontX,frontY); pushTrail(trails.rear,rs.x,rs.y); pushTrail(trails.trailer,trAxX,trAxY); }
@@ -632,8 +609,9 @@ import { createScene } from './render3d.js';
     // skidmarks: lay rubber at the rear wheels when the tail slips/spins, and at the
     // trailer wheels when it fishtails. (lateral dir = (-s,c) for car, (-sp,cp) for trailer)
     const htC=carTrack/2, htT=trailerTrack/2;
-    const rearSkid  = !dead && (st._ar>0.18 || (st._gl>0.8 && Math.abs(st.v)>10));
-    const trailSkid = !dead && (st._aT>0.2 || (st._tbrake && Math.abs(st.v)>8));
+    const fastSkid = Math.abs(st.v) > 30;    // skids are a speed phenomenon — slow parking never marks the tarmac
+    const rearSkid  = !dead && fastSkid && (st._ar>0.3 || st._gl>0.8);
+    const trailSkid = !dead && ((st._tbrake && Math.abs(st.v)>8) || (fastSkid && st._aT>0.45));
     R.updateSkids([
       {key:'rl', x:rs.x - s*htC,  y:rs.y + c*htC,  on:rearSkid},
       {key:'rr', x:rs.x + s*htC,  y:rs.y - c*htC,  on:rearSkid},
@@ -641,17 +619,17 @@ import { createScene } from './render3d.js';
       {key:'tr', x:trAxX + sp*htT, y:trAxY - cp*htT, on:trailSkid},
     ]);
 
-    // off-screen goal arrow: project the bay to the canvas, clamp to the edge
+    // off-screen goal arrow: aim toward the bay with a view-space direction (correct
+    // even when the bay is behind the camera), then clamp to the screen-edge rectangle.
     const ga=$("goalArrow");
     if(level.bay){
-      const p=R.project(level.bay.x, level.bay.y);
-      const cw=glCanvas.clientWidth, ch=glCanvas.clientHeight, m=26;
-      const onscreen = p.visible && p.x>=m && p.x<=cw-m && p.y>=m && p.y<=ch-m;
-      if(onscreen) ga.style.display="none";
+      const a=R.aim(level.bay.x, level.bay.y);
+      if(a.onscreen) ga.style.display="none";
       else {
-        let dx=p.x-cw/2, dy=p.y-ch/2;
-        if(p.behind){ dx=-dx; dy=-dy; }
-        const sc=Math.min((cw/2-m)/(Math.abs(dx)||1e-6), (ch/2-m)/(Math.abs(dy)||1e-6));
+        const cw=glCanvas.clientWidth, ch=glCanvas.clientHeight, m=26;
+        let dx=a.dirx, dy=a.diry;
+        if(Math.abs(dx)<1e-6 && Math.abs(dy)<1e-6) dy=1;     // degenerate (dead behind) -> point down
+        const sc=Math.min((cw/2-m)/Math.abs(dx||1e-6), (ch/2-m)/Math.abs(dy||1e-6));
         ga.style.transform=`translate(${cw/2+dx*sc-17}px,${ch/2+dy*sc-17}px) rotate(${Math.atan2(dy,dx)}rad)`;
         ga.style.display="";
       }
