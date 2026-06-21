@@ -44,7 +44,6 @@ const COL = {
   hub:        '#cfd4e6',
   cone:      '#ff8c1a',
   coneBand:  '#fff4e0',
-  coneHit:   '#7e8590',
   ground:    '#d6d1c5',  // bright, near-neutral warm concrete tarmac in the sun
   wall:      '#9aa6bd',
   region:    '#6d7891',
@@ -116,7 +115,7 @@ export function createScene(canvas, G) {
   sun.shadow.mapSize.set(2048, 2048);
   sun.shadow.bias = -0.0006;
   sun.shadow.normalBias = 1.2;
-  sun.shadow.radius = 6;          // wide PCF penumbra so the droste warm-trail falloff is visible
+  sun.shadow.radius = 4;          // PCF penumbra width — enough for the droste warm-trail falloff, but crisper
   sun.shadow.blurSamples = 16;
   const sc = sun.shadow.camera;
   sc.near = 1; sc.far = 1400; sc.left = -260; sc.right = 260; sc.top = 260; sc.bottom = -260;
@@ -148,9 +147,8 @@ export function createScene(canvas, G) {
   const dyn = new THREE.Group();
   scene.add(dyn);
 
-  // shared cone materials (swap on hit)
+  // shared cone materials
   const coneMat    = withPenumbra(new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.cone), roughness: 0.55, metalness: 0.0, flatShading: true }));
-  const coneHitMat = withPenumbra(new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.coneHit), roughness: 0.85, metalness: 0.0, flatShading: true }));
   const bandMat    = withPenumbra(new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.coneBand), roughness: 0.5, emissive: new THREE.Color('#3a2a10'), emissiveIntensity: 0.4 }));
   // out-of-bounds keep-out zones are painted as a flat diagonal hatch on the tarmac
   // (no 3D walls). Computed in a fragment shader from WORLD x/z, so — like the SVG
@@ -258,12 +256,14 @@ export function createScene(canvas, G) {
         body.position.y = r; body.castShadow = true; body.receiveShadow = true;
         const band = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.62, r * 0.74, r * 0.42, 7), bandMat);
         band.position.y = r * 0.85; band.castShadow = true;
-        const base = new THREE.Mesh(new THREE.BoxGeometry(r * 2.1, r * 0.3, r * 2.1), coneMat);
-        base.position.y = r * 0.15; base.castShadow = true; base.receiveShadow = true;
+        // squircle base slab (extrude the superellipse, then lay it flat so it rises in +Y)
+        const baseGeo = new THREE.ExtrudeGeometry(superellipseShape(r * 1.05, 4, 32), { depth: r * 0.3, bevelEnabled: false });
+        baseGeo.rotateX(-Math.PI / 2);
+        const base = new THREE.Mesh(baseGeo, coneMat);
+        base.castShadow = true; base.receiveShadow = true;
         g.add(body, band, base);
         g.position.set(o.x, 0, o.y);
         dyn.add(g);
-        o._m = body; o._mBand = band; o._mBase = base;   // for coneHit swap
       } else if (o.t === 'wall' || o.t === 'disc' || o.t === 'half' || o.t === 'quad') {
         // every keep-out shape -> a flat hatched polygon lying on the tarmac
         let pts = null;
@@ -293,11 +293,6 @@ export function createScene(canvas, G) {
         }
       }
     }
-  }
-
-  function coneHit(o) {
-    if (o._m) o._m.material = coneHitMat;
-    if (o._mBase) o._mBase.material = coneHitMat;
   }
 
   function update(pose, view) {
@@ -398,12 +393,24 @@ export function createScene(canvas, G) {
     const b = trailer.tilt.getWorldPosition(new THREE.Vector3());   // trailer's pivot = its tongue tip
     return { car: [a.x, a.y, a.z], tongue: [b.x, b.y, b.z], gap: a.distanceTo(b) };
   }
-  return { renderer, scene, camera, resize, buildLevel, coneHit, update, project, aim, updateSkids, clearSkids, hitchDbg, skidCountDbg: () => skidVerts.length/18 };
+  return { renderer, scene, camera, resize, buildLevel, update, project, aim, updateSkids, clearSkids, hitchDbg, skidCountDbg: () => skidVerts.length/18 };
 }
 
 // =========================================================================
 // builders
 // =========================================================================
+// superellipse (squircle) outline as a THREE.Shape — higher ex = closer to a rectangle.
+function superellipseShape(half, ex = 4, segs = 32) {
+  const pts = [];
+  for (let i = 0; i < segs; i++) {
+    const t = i / segs * Math.PI * 2, ct = Math.cos(t), st = Math.sin(t);
+    pts.push(new THREE.Vector2(
+      half * Math.sign(ct) * Math.pow(Math.abs(ct), 2 / ex),
+      half * Math.sign(st) * Math.pow(Math.abs(st), 2 / ex)));
+  }
+  return new THREE.Shape(pts);
+}
+
 function mat(color, o = {}) {
   return withPenumbra(new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: o.r ?? 0.55, metalness: o.m ?? 0.0, flatShading: o.flat ?? true, ...(o.extra || {}) }));
 }
@@ -587,9 +594,10 @@ function buildBay(b, dims, parent) {
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
     uniforms: { uColor: { value: new THREE.Color('#ffc233') } },
     vertexShader: `void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-    // less blow-out (4.0 not 5.5) + a bit more opacity so the amber hue reads in the body
-    // instead of clipping to cream; still > bloom threshold so it glows.
-    fragmentShader: `uniform vec3 uColor; void main(){ gl_FragColor = vec4(uColor * 4.0, 0.30); }`,
+    // subtle half-transparent wash: dimmer (2.4) + lower opacity (0.15) so the fill reads
+    // as a faint tint of the ground rather than a prominent glowing slab. The dashed border
+    // still carries the bright glow; this is just the area inside it.
+    fragmentShader: `uniform vec3 uColor; void main(){ gl_FragColor = vec4(uColor * 2.4, 0.15); }`,
   });
   const fillGeo = new THREE.ShapeGeometry(new THREE.Shape(sp.map(p => new THREE.Vector2(p[0], p[1]))));
   fillGeo.rotateX(-Math.PI / 2);

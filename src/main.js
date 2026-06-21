@@ -85,7 +85,7 @@ import { createScene } from './render3d.js';
       start:{x:0,y:0,th:-Math.PI/2}, bay:null, obstacles:[] },
 
     { id:"l1", name:"1 · Straight back-in",
-      goal:"Your first reverse. The trailer starts slightly kinked, so you can’t back dead straight — steer to line it up and back it to the wall. Clip a corner cone and it’s a fault; ram the wall and you reset.",
+      goal:"Your first reverse. The trailer starts slightly kinked, so you can’t back dead straight — steer to line it up and back it to the wall. Clip a cone or ram the wall and you reset.",
       start:{x:0,y:-220,th:-Math.PI/2},
       bay:{x:0,y:60,ang:Math.PI/2,fit:"trailer"},
       obstacles:[ {t:"half",axis:"y",at:122,sign:1},
@@ -148,19 +148,19 @@ import { createScene } from './render3d.js';
   ];
 
   // ---- state ----
-  let st, cam, level, levelIdx, holdT, levelDone, faults, wasCone, hitWall, hitCone, inPosition, fitNow;
+  let st, cam, level, levelIdx, holdT, levelDone, hitWall, hitCone, inPosition, fitNow;
   let dead, deadT, sampleT, snaps, locked=false, camRot=0, thrDisp=0, teleported=false, mouseSteer=false, camSnap=false;
   let rotateFollow=true;
   let runPath=0, runTime=0, runMoving=false, naming=false, pending=null, myEntry=null, bayGlowCur=0;
-  const completed = new Set(), flawless = new Set();   // flawless = cleared with zero cones touched
-  // leaderboards: per level, two top-N lists (shortest distance, quickest time).
-  // ranking is cones-first (fewer touched always wins), then the metric. persisted if storage allows.
+  const completed = new Set();   // levels cleared (clipping a cone now resets, so a clear is always clean)
+  // leaderboards: per level, two top-N lists (shortest distance, quickest time), ranked on the
+  // metric alone. persisted if storage allows.
   const LB_N=5;
   function loadBoards(){ try{ return JSON.parse(localStorage.getItem("trailerTrainer.boards")||"{}"); }catch(e){ return {}; } }
   function saveBoards(){ try{ localStorage.setItem("trailerTrainer.boards", JSON.stringify(boards)); }catch(e){} }
   let lastName=""; try{ lastName=localStorage.getItem("trailerTrainer.lastName")||""; }catch(e){}
   const boards = loadBoards();
-  const cmp = metric => (a,b)=> (a.cones-b.cones) || (a[metric]-b[metric]);
+  const cmp = metric => (a,b)=> a[metric]-b[metric];
   function boardFor(id){ return boards[id] || (boards[id]={dist:[],time:[]}); }
   function qualifies(list, entry, metric){ return list.length<LB_N || cmp(metric)(entry, list[list.length-1])<0; }
   function isTop(list, entry, metric){ return list.length===0 || cmp(metric)(entry, list[0])<0; }
@@ -373,7 +373,7 @@ import { createScene } from './render3d.js';
     if(pb>0){ const sgn=Math.random()<0.5?-1:1; st.phi = s.th + sgn*(pb + Math.random()*PERTURB_RAND); }
     if(level.lateral){ const sgn=Math.random()<0.5?-1:1, d=sgn*level.lateral*(0.55+Math.random()*0.45);
       st.x += -Math.sin(s.th)*d; st.y += Math.cos(s.th)*d; }
-    holdT=0; levelDone=false; faults=0; wasCone=false; hitWall=false; hitCone=false; inPosition=false; fitNow=false;
+    holdT=0; levelDone=false; hitWall=false; hitCone=false; inPosition=false; fitNow=false;
     runPath=0; runTime=0; runMoving=false; myEntry=null;
     dead=false; deadT=0; sampleT=0; bayGlowCur=0;
     trails.front.length=trails.rear.length=trails.trailer.length=0;
@@ -381,8 +381,7 @@ import { createScene } from './render3d.js';
     snaps=[snapshot()];   // always have at least one fallback
     currState=prevState=captureState(); acc=0; teleported=false;   // reset interpolation
 
-    // build the 3D scene for this level; cones get tagged with o._m for hit-recolor
-    for(const o of level.obstacles){ if(o.t==="cone") o.hit=false; }
+    // build the 3D scene for this level
     R.buildLevel(level, level.bay ? bayDims(level.bay) : null);
 
     $("banner").classList.remove("show");
@@ -458,7 +457,7 @@ import { createScene } from './render3d.js';
 
   function triggerDead(kind){
     dead=true; deadT=0; st.v=0;
-    $("deadBig").textContent = kind==="wall" ? "Crunch!" : "Jackknifed";
+    $("deadBig").textContent = kind==="wall" ? "Crunch!" : kind==="cone" ? "Cone down!" : "Jackknifed";
     $("dead").classList.add("show"); $("ring").classList.add("on");
     buzz();
   }
@@ -568,27 +567,23 @@ import { createScene } from './render3d.js';
 
     // collisions + fit
     const cb=carBox(), tb=trailerBox();
-    hitWall=false; let coneNow=false;
+    hitWall=false; hitCone=false;
     for(const o of level.obstacles){
       if(o.t==="cone"){
-        if(circleHitsBox(o.x,o.y,(o.r||10)+1,cb)||circleHitsBox(o.x,o.y,(o.r||10)+1,tb)){
-          coneNow=true;
-          if(!o.hit){ o.hit=true; clack(); R.coneHit(o); }
-        }
+        if(circleHitsBox(o.x,o.y,(o.r||10)+1,cb)||circleHitsBox(o.x,o.y,(o.r||10)+1,tb)) hitCone=true;
       }
       else if(o.t==="wall"){ const ob={cx:o.x,cy:o.y,ang:o.ang,hl:o.hl,hw:o.hw}; if(boxesOverlap(ob,cb)||boxesOverlap(ob,tb)) hitWall=true; }
       else if(regionHit(o,cb)||regionHit(o,tb)) hitWall=true;
     }
-    if(coneNow&&!wasCone) faults++;
-    wasCone=coneNow; hitCone=coneNow;
 
-    // hit a wall -> rewind (a jackknife is caught above, before collisions run).
+    // clip a cone or hit a wall -> rewind (a jackknife is caught above, before collisions run).
+    if(hitCone){ clack(); triggerDead("cone"); return; }
     if(hitWall){ triggerDead("wall"); return; }
 
     fitNow=checkFit(cb,tb);
-    inPosition = fitNow && Math.abs(st.v)<5 && !hitWall;
+    inPosition = fitNow && Math.abs(st.v)<5;
     if(level.id!=="free"){
-      if(inPosition){ holdT+=dt; if(holdT>0.55 && !levelDone){ levelDone=true; completed.add(level.id); if(faults===0) flawless.add(level.id); recordResult(); showBanner(); } }
+      if(inPosition){ holdT+=dt; if(holdT>0.55 && !levelDone){ levelDone=true; completed.add(level.id); recordResult(); showBanner(); } }
       else holdT=0;
     }
 
@@ -599,7 +594,7 @@ import { createScene } from './render3d.js';
 
   function recordResult(){
     const lb=boardFor(level.id);
-    const entry={name:"", cones:faults, dist:runPath, time:runTime};
+    const entry={name:"", dist:runPath, time:runTime};
     const qd=qualifies(lb.dist,entry,"dist"), qt=qualifies(lb.time,entry,"time");
     if(qd||qt){
       pending={entry, lb, qd, qt, topD:qd&&isTop(lb.dist,entry,"dist"), topT:qt&&isTop(lb.time,entry,"time")};
@@ -616,8 +611,7 @@ import { createScene } from './render3d.js';
           : pending.topT ? " \u00b7 new quickest time!"
           : " \u00b7 made the leaderboard!";
     }
-    const cones = faults===0 ? "clean run" : faults+" cone"+(faults>1?"s":"")+" touched";
-    $("bannerSub").textContent = `distance ${Math.round(runPath)} \u00b7 ${runTime.toFixed(1)}s \u00b7 ${cones}${tag}`;
+    $("bannerSub").textContent = `distance ${Math.round(runPath)} \u00b7 ${runTime.toFixed(1)}s${tag}`;
     $("banner").classList.add("show");
     refreshLevelUI();
   }
@@ -708,7 +702,6 @@ import { createScene } from './render3d.js';
     else if(drifting){ status.textContent="DRIFTING"; status.className="status warn"; }
     else if(inPosition){ status.textContent="IN POSITION"; status.className="status good"; }
     else { status.textContent = st.v<-1?"REVERSING":(st.v>1?"DRIVING":"READY"); status.className="status"; }
-    $("faults").textContent="faults: "+faults;
 
     // steering bar
     const fr = clamp(st.delta/MAX_STEER, -1, 1), mg = Math.abs(fr), Wp = mg*50;
@@ -743,7 +736,7 @@ import { createScene } from './render3d.js';
   const fmtTime=t=>t.toFixed(1)+"s";
   function updateRunLine(){
     $("recRun").textContent = level.id==="free" ? "\u2014"
-      : (fmtDist(runPath)+"  \u00b7  "+(runMoving?fmtTime(runTime):"0.0s")+"  \u00b7  "+faults+"c");
+      : (fmtDist(runPath)+"  \u00b7  "+(runMoving?fmtTime(runTime):"0.0s"));
   }
   function renderBoard(elId, list, metric){
     const box=$(elId); box.replaceChildren();
@@ -753,9 +746,8 @@ import { createScene } from './render3d.js';
     list.forEach((e,i)=>{ const row=document.createElement("div"); row.className="brow"+(e===myEntry?" mine":"");
       const rank=document.createElement("span"); rank.className="br-rank"; rank.textContent=(i+1);
       const name=document.createElement("span"); name.className="br-name"; name.textContent=e.name;
-      const cone=document.createElement("span"); cone.className="br-cone"+(e.cones===0?" clean":""); cone.textContent=e.cones+"c";
       const val=document.createElement("span"); val.className="br-val"; val.textContent=metric==="dist"?fmtDist(e.dist):fmtTime(e.time);
-      row.append(rank,name,cone,val); box.appendChild(row); });
+      row.append(rank,name,val); box.appendChild(row); });
   }
   function refreshBoards(){
     if(level.id==="free"){ $("boardDist").innerHTML='<div class="board-empty">free drive — no scoring</div>'; $("boardTime").replaceChildren(); return; }
@@ -766,7 +758,7 @@ import { createScene } from './render3d.js';
     naming=true; keys.clear();
     const p=pending, where=p.qd&&p.qt?"both boards":p.qd?"the distance board":"the time board";
     $("nmTitle").textContent = (p.topD||p.topT) ? "New highscore!" : "Leaderboard!";
-    $("nmSub").textContent = `You made ${where} — distance ${Math.round(runPath)}, time ${runTime.toFixed(1)}s, ${faults} cone${faults===1?"":"s"}.`;
+    $("nmSub").textContent = `You made ${where} — distance ${Math.round(runPath)}, time ${runTime.toFixed(1)}s.`;
     const chips=$("nmChips"); chips.replaceChildren();
     knownNames().forEach(nm=>{ const b=document.createElement("button"); b.textContent=nm; b.onclick=()=>submitName(nm); chips.appendChild(b); });
     const inp=$("nmInput"); inp.value=lastName||"";
@@ -802,8 +794,7 @@ import { createScene } from './render3d.js';
     }
     [...list.children].forEach((b,i)=>{ b.classList.toggle("active",i===levelIdx);
       const id=LEVELS[i].id, tick=b.querySelector(".tick");
-      if(flawless.has(id)){ tick.textContent="\u2713"; tick.style.color="var(--good)"; }          // green check = flawless
-      else if(completed.has(id)){ tick.textContent="\u2022"; tick.style.color="var(--amber)"; }   // amber dot = cleared but clipped a cone
+      if(completed.has(id)){ tick.textContent="\u2713"; tick.style.color="var(--good)"; }   // green check = cleared
       else { tick.textContent=""; } });
   }
 

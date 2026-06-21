@@ -88,11 +88,9 @@
   .board{margin-bottom:8px}
   .board-h{color:var(--ink-dim);letter-spacing:.05em;text-transform:uppercase;font-size:9.5px;margin-bottom:3px}
   .board-rows{display:flex;flex-direction:column;gap:1px}
-  .brow{display:grid;grid-template-columns:14px 1fr auto auto;align-items:baseline;gap:7px}
+  .brow{display:grid;grid-template-columns:14px 1fr auto;align-items:baseline;gap:7px}
   .brow .br-rank{color:var(--ink-dim)}
   .brow .br-name{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .brow .br-cone{color:var(--ink-dim);font-size:9.5px}
-  .brow .br-cone.clean{color:var(--good)}
   .brow .br-val{color:var(--marking);font-variant-numeric:tabular-nums}
   .brow.mine .br-name{color:var(--good)}
   .board-empty{color:var(--ink-dim);opacity:.6}
@@ -196,7 +194,7 @@
 
     <div class="banner" id="banner">
       <div class="big" id="bannerBig">Level clear</div>
-      <div class="sub2" id="bannerSub">clean run</div>
+      <div class="sub2" id="bannerSub"></div>
       <button class="primary" id="btnNext">Next level &nbsp;(N / Space)</button>
     </div>
 
@@ -219,7 +217,7 @@
       <h2>Level</h2>
       <div class="levels" id="levelList"></div>
       <div class="goal" id="goal"></div>
-      <div class="meta"><span id="faults">faults: 0</span><span id="prog"></span></div>
+      <div class="meta"><span id="prog"></span></div>
       <div class="records">
         <div class="board"><div class="board-h">shortest distance</div><div class="board-rows" id="boardDist"></div></div>
         <div class="board"><div class="board-h">quickest time</div><div class="board-rows" id="boardTime"></div></div>
