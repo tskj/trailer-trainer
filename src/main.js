@@ -21,14 +21,33 @@ import { createScene } from './render3d.js';
   const MAX_ARTIC    = 82*Math.PI/180;   // hard clamp (just beyond, as a backstop)
 
   // ---- engine / longitudinal (acceleration units, mass = 1; top speed ~ DRIVE/DRAG_L) ----
-  // gentle: low force + low drag -> slow off the line, climbs slowly to a modest
-  // top speed (~120). Forward is mostly for repositioning now.
-  const DRIVE=55, REV=33, BRAKE=160, DRAG_L=0.45, ROLL_L=8;
-  const MAX_SPEED=180;                              // safety clamp
+  // same gentle push off the line (DRIVE unchanged), but drag is ~10x lower so the
+  // drag-limited top speed is ~10x higher (~1040) and the climb takes a long, long time
+  // to get there — it just keeps slowly pulling. Forward is mostly for repositioning.
+  const DRIVE=55, REV=33, BRAKE=160, DRAG_L=0.045, ROLL_L=8;
+  const MAX_SPEED=1200;                            // safety clamp (above the ~1040 drag-limited top)
   // ---- tyres: very grippy now (precision parking focus) — the car holds its line
   //      and never slides/drifts from its own inputs ----
   const GRIP_F=380, GRIP_R=380, KSTIFF=9.0, REAR_LONG=0.0;
   const LR=L*0.45, LF=L-LR, IZ=360, YAW_DAMP=2.2;   // COG offsets, yaw inertia, spin damping
+  // speed-sensitive steering: full authority at parking speeds, eased down toward STEER_LO
+  // as speed builds, so the front bites less and pushes wide (understeer) instead of darting.
+  const STEER_REF=230, STEER_LO=0.22;               // half-falloff speed, high-speed authority floor (lower = more understeer)
+  // trailer sway / snaking: no-slip roll at low speed / any reverse, but above TR_SLIDE_LO
+  // (forward only) the trailer is a free body with real yaw INERTIA (TR_IZ) — so once it swings,
+  // its momentum overshoots the centre line and carries out the other side. The wheel is a real
+  // tyre whose grip PEAKS then FALLS past breakaway (~1/TR_KSTIFF), and crucially its force LAGS
+  // the slip by a relaxation length (TR_RELAX): that phase lag pumps energy into the swing, so a
+  // little wag builds up (more and more) into a full pendulum fishtail rather than settling back
+  // into line. Slow down to kill it; let it run and the jackknife angle catches it. Gated so slow
+  // speed + all reverse stay pure no-slip (verified: zero slip, unchanged jackknife).
+  const TR_SLIDE_LO=100, TR_SLIDE_HI=240;           // forward-speed range over which sway fades in
+  const TR_GRIP=70, TR_KSTIFF=6, TR_IZ=1000;        // peak grip, slip stiffness (breakaway ~1/6 rad), yaw inertia (momentum)
+  const TR_RELAX=130;                                // tyre relaxation length — the lag that drives the growing sway (lower = builds faster/more violent)
+  // and the sway feeds BACK into the car: the trailer's lateral tyre force pulls the hitch, which
+  // (being behind the rear axle) yaws the car and can break its own rear loose at speed. Zero
+  // whenever the sway is gated off (TR tyre force is 0), so low speed + reverse are untouched.
+  const TR_COUPLE=1.0;                               // how hard the swaying trailer yanks the car (higher = throws the car more easily)
   // ---- trailer: KINEMATIC no-slip rolling constraint (see step()). No tyre/grip
   //      constants — the wheel can't slip sideways, so it tracks cleanly at any speed
   //      and reverse folds toward a jackknife (JACK_TRIGGER) if you don't correct. ----
@@ -53,7 +72,8 @@ import { createScene } from './render3d.js';
   const TR_SUS_K=70, TR_SUS_D=7.0;                   // softer, slower trailer suspension
 
   // ---- rewind double-buffer ----
-  const SAMPLE_INTERVAL=1.5, DEAD_TIME=2.0;   // linger on the fail screen a bit longer before rewinding
+  const SAMPLE_INTERVAL=1.5, DEAD_TIME=1.45;  // red fail-flash clears fairly quickly; the buzz keeps fading out past it
+  const DEAD_JITTER=0.22;                      // +/- small random wobble on the reset timing so it doesn't feel metronomic
 
   // ---- every level starts the trailer slightly kinked (random side + amount) so you can
   //      never just back dead-straight. A level may override with its own `perturb`, or set
@@ -149,7 +169,7 @@ import { createScene } from './render3d.js';
 
   // ---- state ----
   let st, cam, level, levelIdx, holdT, levelDone, hitWall, hitCone, inPosition, fitNow;
-  let dead, deadT, sampleT, snaps, locked=false, camRot=0, thrDisp=0, teleported=false, mouseSteer=false, camSnap=false;
+  let dead, deadT, deadDur=DEAD_TIME, sampleT, snaps, locked=false, camRot=0, camLook=0, thrDisp=0, teleported=false, mouseSteer=false, camSnap=false;
   let rotateFollow=true;
   let runPath=0, runTime=0, runMoving=false, naming=false, pending=null, myEntry=null, bayGlowCur=0;
   const completed = new Set();   // levels cleared (clipping a cone now resets, so a clear is always clean)
@@ -208,10 +228,10 @@ import { createScene } from './render3d.js';
         o.type="triangle"; o.frequency.value=freq;          // softer than square -> gentler buzz
         o.connect(g); g.connect(actx.destination);
         g.gain.setValueAtTime(0,t);
-        g.gain.linearRampToValueAtTime(0.08,t+0.05);         // softer + slower attack
-        g.gain.setValueAtTime(0.08,t+0.5);
-        g.gain.linearRampToValueAtTime(0,t+0.72);            // longer, gentler fade
-        o.start(t); o.stop(t+0.73);
+        g.gain.linearRampToValueAtTime(0.08,t+0.05);         // quick attack
+        g.gain.setValueAtTime(0.08,t+0.9);                   // hold the buzz
+        g.gain.exponentialRampToValueAtTime(0.0001,t+3.4);   // long slow fade — keeps trailing off after the reset
+        o.start(t); o.stop(t+3.45);
       });
     }catch(e){}
   }
@@ -367,7 +387,7 @@ import { createScene } from './render3d.js';
   function loadLevel(i){
     levelIdx=i; level=LEVELS[i];
     const s=level.start;
-    st={x:s.x,y:s.y,theta:s.th,phi:s.th,delta:0,v:0,vlat:0,omega:0,omegaT:0,
+    st={x:s.x,y:s.y,theta:s.th,phi:s.th,delta:0,v:0,vlat:0,omega:0,omegaT:0,FyT:0,
         pitch:0,pitchV:0,roll:0,rollV:0,trRoll:0,trRollV:0};
     const pb = level.perturb ?? PERTURB;
     if(pb>0){ const sgn=Math.random()<0.5?-1:1; st.phi = s.th + sgn*(pb + Math.random()*PERTURB_RAND); }
@@ -457,6 +477,7 @@ import { createScene } from './render3d.js';
 
   function triggerDead(kind){
     dead=true; deadT=0; st.v=0;
+    deadDur = DEAD_TIME + (Math.random()*2-1)*DEAD_JITTER;   // small per-death wobble on the reset timing
     $("deadBig").textContent = kind==="wall" ? "Crunch!" : kind==="cone" ? "Cone down!" : "Jackknifed";
     $("dead").classList.add("show"); $("ring").classList.add("on");
     buzz();
@@ -470,7 +491,7 @@ import { createScene } from './render3d.js';
   }
 
   function step(dt){
-    if(dead){ deadT+=dt; if(deadT>=DEAD_TIME) respawn(); return; }
+    if(dead){ deadT+=dt; if(deadT>=deadDur) respawn(); return; }
 
     // longitudinal + lateral dynamics are integrated in the substep loop below
     const throttle = isFwd()?1:0, reverse = isRev()?1:0, braking = isBrake()?1:0;
@@ -504,7 +525,11 @@ import { createScene } from './render3d.js';
       const cogvx0=u*cth - w*sth, cogvy0=u*sth + w*cth;      // COG world velocity (start)
       const Vhx = cogvx0 + om*d*sth, Vhy = cogvy0 - om*d*cth; // hitch world velocity
       const omegaTkin = (Vhy*cph - Vhx*sph)/draw_d;          // lateral hitch vel / draw_d -> trailer yaw rate
-      const yankBX = 0, yankBY = 0, yankTau = 0;             // no trailer->car yank in precision mode
+      // trailer -> car feedback: the trailer's lateral tyre force (st.FyT, last substep) pulls the
+      // hitch; in the car body frame that's a lateral+long force at the rear, plus a yaw torque
+      // (lever d). It's 0 unless the sway is active, so low speed / reverse feel nothing.
+      const cArt = cth*cph + sth*sph, sArt = sth*cph - cth*sph;   // cos/sin(theta - phi)
+      const yankBY = TR_COUPLE*st.FyT*cArt, yankBX = TR_COUPLE*st.FyT*sArt, yankTau = -d*yankBY;
 
       // --- car longitudinal + lateral tyres ---
       let Fx = throttle*DRIVE - reverse*REV;
@@ -512,7 +537,10 @@ import { createScene } from './render3d.js';
       Fx -= DRAG_L*u + ROLL_L*Math.tanh(u*3);               // viscous + coulomb resistance
       const sp = Math.hypot(u,w), den = Math.max(sp,3), su = u>=0?1:-1;
       const latFade = Math.min(1, sp/1.2);                  // grip engages just off standstill -> crisp low-speed tracking (only true crawl fades, to avoid jitter)
-      const af = Math.atan2(w + LF*om, den) - st.delta*su;
+      // speed-sensitive steering: ~full angle while parking, eased toward STEER_LO at speed.
+      // the front acts on this reduced angle -> it bites less and washes wide (understeer).
+      const dEff = st.delta*(STEER_LO + (1-STEER_LO)/(1 + (sp/STEER_REF)*(sp/STEER_REF)));
+      const af = Math.atan2(w + LF*om, den) - dEff*su;
       const ar = Math.atan2(w - LR*om, den);
       const tract = throttle*DRIVE + braking*BRAKE + reverse*REV;
       const gl = Math.min(1, tract*REAR_LONG/GRIP_R);       // RWD friction circle: drive/brake eats rear grip
@@ -520,9 +548,9 @@ import { createScene } from './render3d.js';
       const Fyf = -GRIP_F*latFade*Math.tanh(KSTIFF*af);
       const Fyr = -grR   *latFade*Math.tanh(KSTIFF*ar);
 
-      const ax = Fx - Fyf*Math.sin(st.delta) + w*om + yankBX;
-      const ay = Fyf*Math.cos(st.delta) + Fyr - u*om + yankBY;
-      const omdot = (LF*Fyf*Math.cos(st.delta) - LR*Fyr + yankTau)/IZ - YAW_DAMP*om;
+      const ax = Fx - Fyf*Math.sin(dEff) + w*om + yankBX;
+      const ay = Fyf*Math.cos(dEff) + Fyr - u*om + yankBY;
+      const omdot = (LF*Fyf*Math.cos(dEff) - LR*Fyr + yankTau)/IZ - YAW_DAMP*om;
       u = clamp(u + ax*h, -MAX_SPEED, MAX_SPEED);
       w += ay*h; om += omdot*h;
 
@@ -533,14 +561,30 @@ import { createScene } from './render3d.js';
       st.v=u; st.vlat=w; st.omega=om;
       st.x = cogx - LR*c2; st.y = cogy - LR*s2;             // back to rear-axle reference
 
-      // --- integrate the trailer kinematically ---
-      st.omegaT = omegaTkin;
+      // --- integrate the trailer: instant no-slip roll, fading into a free swaying body at speed ---
+      // slideGate is 0 in reverse and at low forward speed -> omegaT === omegaTkin (pure kinematic,
+      // unchanged). At high forward speed the trailer is a free body: a peak-and-drop tyre force acts
+      // through its yaw inertia (so it has momentum and overshoots), and TR_PUMP feeds energy into the
+      // deviation so the swing builds instead of settling -> a growing fishtail until it jackknifes.
+      let omegaT = omegaTkin, slipAng = 0;
+      const sg = clamp((u - TR_SLIDE_LO)/(TR_SLIDE_HI - TR_SLIDE_LO), 0, 1), slideGate = sg*sg*(3-2*sg);
+      if(slideGate > 0){
+        const Vt = Math.max(Math.hypot(Vhx, Vhy), 1);
+        slipAng = (omegaTkin - st.omegaT)*draw_d/Vt;           // wheel slip angle (uses the trailer's own yaw rate)
+        const x = TR_KSTIFF*slipAng;
+        const FyTarget = 2*TR_GRIP * x/(1 + x*x);              // peak-and-drop tyre: restoring, but FALLS past breakaway
+        st.FyT += (FyTarget - st.FyT)*Math.min(1, Vt*h/TR_RELAX);   // relaxation: force lags the slip -> phase lag that grows the sway
+        const omegaDyn = clamp(st.omegaT + (draw_d*st.FyT/TR_IZ)*h, -8, 8);  // torque about the hitch / yaw inertia
+        omegaT = omegaTkin + slideGate*(omegaDyn - omegaTkin);
+      } else st.FyT = 0;
+      st.omegaT = omegaT;
       st.phi += st.omegaT*h;
+      st._aT = Math.abs(slipAng)*slideGate;                    // slip angle -> trailer skidmarks once it breaks loose
       const rel=norm(st.theta-st.phi);
       if(rel> MAX_ARTIC){ st.phi=st.theta-MAX_ARTIC; st.omegaT=om; }
       if(rel<-MAX_ARTIC){ st.phi=st.theta+MAX_ARTIC; st.omegaT=om; }
 
-      st._ar=Math.abs(ar); st._gl=gl; st._aT=0;        // car slip metrics for skidmarks (trailer never slips now)
+      st._ar=Math.abs(ar); st._gl=gl;                  // car slip metrics for skidmarks (st._aT set in the trailer block)
     }
 
     // --- body dynamics (cosmetic): drive a sprung-mass spring-damper from the accelerations ---
@@ -634,11 +678,17 @@ import { createScene } from './render3d.js';
       tx = rs.x - bk*Math.cos(rs.theta) + wvx*0.08;
       ty = rs.y - bk*Math.sin(rs.theta) + wvy*0.08;
     } else { tx=(frontX+trAxX)/2; ty=(frontY+trAxY)/2; }
+    // when driving forward, ease the camera's aim up/ahead so it looks where you're going.
+    // a Hill curve v^2/(v^2+K^2) tracks speed across the whole range with flat asymptotes at
+    // both ends: ~no look while crawling, gradually leaning in, saturating near top speed.
+    const fv = Math.max(0, st.v), LOOK_K = 420;
+    const lookTarget = rotateFollow ? (fv*fv)/(fv*fv + LOOK_K*LOOK_K) : 0;
     if(camSnap){                                           // after a reset / level load: insta-pop, no follow animation
-      cam.x=tx; cam.y=ty; if(rotateFollow) camRot=-Math.PI/2-rs.theta; camSnap=false;
+      cam.x=tx; cam.y=ty; if(rotateFollow) camRot=-Math.PI/2-rs.theta; camLook=lookTarget; camSnap=false;
     } else {
       cam.x+=(tx-cam.x)*0.07; cam.y+=(ty-cam.y)*0.07;      // looser follow -> the rig moves within the frame
       if(rotateFollow) camRot += norm((-Math.PI/2 - rs.theta) - camRot)*0.048;  // rotation lags -> car visibly turns/slides in frame
+      camLook += (lookTarget - camLook)*0.05;              // ease the look-ahead (slower than position so it feels weighty)
     }
 
     // trails: sample the interpolated wheel positions
@@ -649,7 +699,7 @@ import { createScene } from './render3d.js';
     R.update(
       {x:rs.x, y:rs.y, theta:rs.theta, phi:rs.phi, delta:rs.delta,
        pitch:rs.pitch, roll:rs.roll, trRoll:rs.trRoll},
-      {camX:cam.x, camY:cam.y, camRot, rotateFollow, bayColor:bayColorAt(bayGlowCur), bayEdge:bayEdgeAt(bayGlowCur), trails, trailsOn, dead}
+      {camX:cam.x, camY:cam.y, camRot, camLook, rotateFollow, bayColor:bayColorAt(bayGlowCur), bayEdge:bayEdgeAt(bayGlowCur), trails, trailsOn, dead}
     );
 
     // skidmarks: lay rubber at the rear wheels when the tail slips/spins, and at the
@@ -657,7 +707,7 @@ import { createScene } from './render3d.js';
     const htC=carTrack/2, htT=trailerTrack/2;
     const fastSkid = Math.abs(st.v) > 30;    // skids are a speed phenomenon — slow parking never marks the tarmac
     const rearSkid  = !dead && fastSkid && (st._ar>0.3 || st._gl>0.8);
-    const trailSkid = !dead && fastSkid && st._aT>0.45;
+    const trailSkid = !dead && fastSkid && st._aT>0.2;   // st._aT is slip ANGLE now -> only marks once it's actually sliding (past ~breakaway)
     R.updateSkids([
       {key:'rl', x:rs.x - s*htC,  y:rs.y + c*htC,  on:rearSkid},
       {key:'rr', x:rs.x + s*htC,  y:rs.y - c*htC,  on:rearSkid},

@@ -320,7 +320,9 @@ export function createScene(canvas, G) {
       const fx = Math.cos(thS), fz = Math.sin(thS);
       camera.position.set(view.camX - fx * 120, 440, view.camY - fz * 120);   // higher + closer = steeper look-down
       camera.up.set(0, 1, 0);
-      camera.lookAt(view.camX + fx * 8, 4, view.camY + fz * 8);                // centre near the rig -> more of behind in view
+      // driving forward (look 0..1) pushes the aim ahead + raises it -> camera tilts up toward where you're going
+      const look = view.camLook || 0;
+      camera.lookAt(view.camX + fx * (8 + 200 * look), 4 + 105 * look, view.camY + fz * (8 + 200 * look));
     } else {
       camera.position.set(view.camX, 620, view.camY + 0.001);
       camera.up.set(0, 0, -1);
