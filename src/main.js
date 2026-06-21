@@ -38,6 +38,20 @@ import { createScene } from './render3d.js';
   // so tapping nudges the wheel and it eases back to centre (mouse still set-and-holds)
   const STEER_FORCE=1.2, STEER_DRAG=1.6, STEER_ROLL=0.05;
 
+  // ---- body dynamics (cosmetic only): a sprung mass on a spring-damper. Longitudinal
+  //      acceleration pitches the car (squat under power, dive under braking) and lateral
+  //      acceleration rolls it into a lean. Underdamped, so it bobs and settles instead of
+  //      snapping. The trailer gets its own softer version, coupled through the hitch. ----
+  const PITCH_GAIN=0.0011, PITCH_MAX=0.060;         // rad per unit long-accel, hard clamp (~3.4°; the spring overshoots a touch past it)
+  const ROLL_GAIN =0.0013, ROLL_MAX =0.052;         // rad per unit lat-accel,  hard clamp (~3.0°)
+  const SUS_K=95, SUS_D=9.0;                          // spring stiffness / damping (omega_n~9.7, zeta~0.46 -> a small contained bob)
+  // trailer pitch isn't sprung here — it's derived in the renderer from the (tilted) car's
+  // hitch height so the tongue stays coupled and the wheels stay grounded (and so it gets
+  // subtler automatically as the car's pitch shrinks). Only its lateral lean is sprung (a
+  // ball-jointed hitch lets the trailer roll independently of the car).
+  const TR_ROLL_GAIN =0.0014, TR_ROLL_MAX =0.062;
+  const TR_SUS_K=70, TR_SUS_D=7.0;                   // softer, slower trailer suspension
+
   // ---- rewind double-buffer ----
   const SAMPLE_INTERVAL=1.5, DEAD_TIME=2.0;   // linger on the fail screen a bit longer before rewinding
 
@@ -287,9 +301,8 @@ import { createScene } from './render3d.js';
   const isRev =()=>keys.has("ArrowDown")||keys.has("d")||keys.has("k");
   const isLeft=()=>keys.has("ArrowLeft")||keys.has("s")||keys.has("j");
   const isRight=()=>keys.has("ArrowRight")||keys.has("f")||keys.has("l");
-  const isBrake=()=>keys.has("Control");                         // Ctrl = car brakes
-  const isTBrake=()=>keys.has("Shift");                          // Shift = trailer brake (locks the trailer wheel -> swings it out)
-  const MOVE=["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","e","s","d","f","i","j","k","l","Control","Shift"];
+  const isBrake=()=>keys.has("Control");                         // Ctrl = brakes
+  const MOVE=["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","e","s","d","f","i","j","k","l","Control"];
   addEventListener("keydown", e=>{
     if(naming) return;
     const k = e.key.length===1 ? e.key.toLowerCase() : e.key;
@@ -349,7 +362,8 @@ import { createScene } from './render3d.js';
   function loadLevel(i){
     levelIdx=i; level=LEVELS[i];
     const s=level.start;
-    st={x:s.x,y:s.y,theta:s.th,phi:s.th,delta:0,v:0,vlat:0,omega:0,omegaT:0};
+    st={x:s.x,y:s.y,theta:s.th,phi:s.th,delta:0,v:0,vlat:0,omega:0,omegaT:0,
+        pitch:0,pitchV:0,roll:0,rollV:0,trRoll:0,trRollV:0};
     if(level.perturb){ const sgn=Math.random()<0.5?-1:1; st.phi = s.th + sgn*(level.perturb + Math.random()*0.06); }
     if(level.lateral){ const sgn=Math.random()<0.5?-1:1, d=sgn*level.lateral*(0.55+Math.random()*0.45);
       st.x += -Math.sin(s.th)*d; st.y += Math.cos(s.th)*d; }
@@ -454,7 +468,8 @@ import { createScene } from './render3d.js';
     if(dead){ deadT+=dt; if(deadT>=DEAD_TIME) respawn(); return; }
 
     // longitudinal + lateral dynamics are integrated in the substep loop below
-    const throttle = isFwd()?1:0, reverse = isRev()?1:0, braking = isBrake()?1:0, tbrake = isTBrake()?1:0;
+    const throttle = isFwd()?1:0, reverse = isRev()?1:0, braking = isBrake()?1:0;
+    const v0 = st.v, om0 = st.omega, omT0 = st.omegaT;   // pre-step velocities -> body-attitude accel
 
     // steering. The mouse owns the wheel and HOLDS any angle (set-and-hold).
     // Keyboard mirrors the throttle (force + viscous drag + coulomb return) so it
@@ -520,8 +535,20 @@ import { createScene } from './render3d.js';
       if(rel> MAX_ARTIC){ st.phi=st.theta-MAX_ARTIC; st.omegaT=om; }
       if(rel<-MAX_ARTIC){ st.phi=st.theta+MAX_ARTIC; st.omegaT=om; }
 
-      st._ar=Math.abs(ar); st._gl=gl; st._aT=0; st._tbrake=false;  // car slip metrics for skidmarks (trailer never slips now)
+      st._ar=Math.abs(ar); st._gl=gl; st._aT=0;        // car slip metrics for skidmarks (trailer never slips now)
     }
+
+    // --- body dynamics (cosmetic): drive a sprung-mass spring-damper from the accelerations ---
+    // longitudinal accel from the velocity change this tick; lateral accel ~ centripetal (v*yaw).
+    const aLong  = (st.v - v0)/dt;
+    const aLatC  = st.v*st.omega + (st.omega-om0)/dt*LR;          // car body lateral accel (centripetal + yaw transient)
+    const aLatT  = st.v*st.omegaT + (st.omegaT-omT0)/dt*draw_d*0.5;// trailer lateral accel about its axle
+    const spring = (ang,vel,target,k,d)=>{ const a=k*(target-ang)-d*vel; return [ang+vel*dt, vel+a*dt]; };
+    // car: forward accel lifts the nose (squat), braking dives it; lateral accel leans it out of the turn
+    [st.pitch, st.pitchV] = spring(st.pitch, st.pitchV, clamp( aLong *PITCH_GAIN, -PITCH_MAX, PITCH_MAX), SUS_K, SUS_D);
+    [st.roll,  st.rollV ] = spring(st.roll,  st.rollV,  clamp(-aLatC *ROLL_GAIN,  -ROLL_MAX,  ROLL_MAX ), SUS_K, SUS_D);
+    // trailer: cornering lean only (its pitch is geometric — derived from the hitch in the renderer)
+    [st.trRoll,  st.trRollV ] = spring(st.trRoll,  st.trRollV,  clamp(-aLatT *TR_ROLL_GAIN,  -TR_ROLL_MAX,  TR_ROLL_MAX ), TR_SUS_K, TR_SUS_D);
 
     // jackknife -> game over: folding past the trigger angle ends the run (rewind)
     if(Math.abs(norm(st.theta - st.phi)) >= JACK_TRIGGER){ triggerDead("jackknife"); return; }
@@ -620,7 +647,8 @@ import { createScene } from './render3d.js';
     // hand the interpolated pose + view state to the 3D renderer
     bayGlowCur += (bayFitGlow() - bayGlowCur) * 0.12;     // ease, then interpolate the glow colour in OKLab
     R.update(
-      {x:rs.x, y:rs.y, theta:rs.theta, phi:rs.phi, delta:rs.delta},
+      {x:rs.x, y:rs.y, theta:rs.theta, phi:rs.phi, delta:rs.delta,
+       pitch:rs.pitch, roll:rs.roll, trRoll:rs.trRoll},
       {camX:cam.x, camY:cam.y, camRot, rotateFollow, bayColor:bayColorAt(bayGlowCur), bayEdge:bayEdgeAt(bayGlowCur), trails, trailsOn, dead}
     );
 
@@ -629,7 +657,7 @@ import { createScene } from './render3d.js';
     const htC=carTrack/2, htT=trailerTrack/2;
     const fastSkid = Math.abs(st.v) > 30;    // skids are a speed phenomenon — slow parking never marks the tarmac
     const rearSkid  = !dead && fastSkid && (st._ar>0.3 || st._gl>0.8);
-    const trailSkid = !dead && ((st._tbrake && Math.abs(st.v)>8) || (fastSkid && st._aT>0.45));
+    const trailSkid = !dead && fastSkid && st._aT>0.45;
     R.updateSkids([
       {key:'rl', x:rs.x - s*htC,  y:rs.y + c*htC,  on:rearSkid},
       {key:'rr', x:rs.x + s*htC,  y:rs.y - c*htC,  on:rearSkid},
@@ -797,11 +825,14 @@ import { createScene } from './render3d.js';
   const TICK = 1/120, MAX_STEPS_PER_FRAME = 8;
   const lerpN  = (a,b,t)=> a + (b-a)*t;
   const lerpAng= (a,b,t)=> a + norm(b-a)*t;          // shortest-arc angle interpolation
-  function captureState(){ return {x:st.x,y:st.y,theta:st.theta,phi:st.phi,delta:st.delta,v:st.v}; }
+  function captureState(){ return {x:st.x,y:st.y,theta:st.theta,phi:st.phi,delta:st.delta,v:st.v,
+    pitch:st.pitch,roll:st.roll,trRoll:st.trRoll}; }
   function lerpState(p,c,t){ return {
     x:lerpN(p.x,c.x,t), y:lerpN(p.y,c.y,t),
     theta:lerpAng(p.theta,c.theta,t), phi:lerpAng(p.phi,c.phi,t),
-    delta:lerpN(p.delta,c.delta,t), v:c.v }; }
+    delta:lerpN(p.delta,c.delta,t), v:c.v,
+    pitch:lerpN(p.pitch,c.pitch,t), roll:lerpN(p.roll,c.roll,t),
+    trRoll:lerpN(p.trRoll,c.trRoll,t) }; }
 
   let prevState=null, currState=null, acc=0, last=performance.now();
   function frame(now){
@@ -827,5 +858,7 @@ import { createScene } from './render3d.js';
   requestAnimationFrame(frame);
 
   // debug telemetry hook (read by test scripts)
-  window.__tt = () => ({ v:st.v, vlat:st.vlat, om:st.omega, omT:st.omegaT, delta:st.delta, artic:norm(st.theta-st.phi)*57.3, ar:st._ar, gl:st._gl, aT:st._aT, skids:R.skidCountDbg?R.skidCountDbg():-1 });
+  window.__tt = () => ({ v:st.v, vlat:st.vlat, om:st.omega, omT:st.omegaT, delta:st.delta, artic:norm(st.theta-st.phi)*57.3, ar:st._ar, gl:st._gl, aT:st._aT, skids:R.skidCountDbg?R.skidCountDbg():-1,
+    pitch:st.pitch*57.3, roll:st.roll*57.3, trRoll:st.trRoll*57.3 });
+  window.__hitch = () => R.hitchDbg();   // coupling check: car-hitch vs trailer-tongue world gap
 })();

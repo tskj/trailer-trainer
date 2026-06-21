@@ -53,6 +53,8 @@ const COL = {
 };
 
 // ---- light rig (droste: 3 colored lights, none white) ----
+const clamp = (v, a, b) => (v < a ? a : (v > b ? b : v));
+const _hitch = new THREE.Vector3();                             // reused scratch for the hitch world point
 const SUN_DIR = new THREE.Vector3(0.55, 1.0, 0.42).normalize(); // warm key, upper-front-right
 const SKY_DIR = new THREE.Vector3(0.0, 1.0, 0.0);               // cool fill from straight up
 const BNC_DIR = new THREE.Vector3(-0.55, 0.18, -0.42).normalize(); // warm bounce, anti-sun low
@@ -276,13 +278,22 @@ export function createScene(canvas, G) {
 
   function update(pose, view) {
     // --- rig transforms ---
-    const c = Math.cos(pose.theta), s = Math.sin(pose.theta);
     car.group.position.set(pose.x, 0, pose.y);
     car.group.rotation.y = -pose.theta;
     car.steer(pose.delta);
-    const hx = pose.x - G.hitchC * c, hy = pose.y - G.hitchC * s;
-    trailer.group.position.set(hx, 0, hy);
+    // body attitude (cosmetic): pitch about the lateral axis (z), roll about the forward axis (x)
+    car.tilt.rotation.set(pose.roll || 0, 0, pose.pitch || 0);
+
+    // single shared coupling point: the hitch as carried by the car's (tilted) sprung body.
+    // getWorldPosition refreshes the car's world matrices, so this already includes pitch/roll.
+    const H = car.hitchAnchor.getWorldPosition(_hitch);
+    // trailer hangs off H: place its tongue tip exactly there, then derive a pitch that puts
+    // its axle back on the ground. Tongue tip stays glued to the car; wheels stay planted.
+    const ty = G.wheelL / 2 + 1;
+    trailer.group.position.set(H.x, H.y - ty, H.z);
     trailer.group.rotation.y = -pose.phi;
+    const trPitch = Math.asin(clamp((H.y - ty) / G.draw_d, -0.5, 0.5));
+    trailer.tilt.rotation.set(pose.trRoll || 0, 0, trPitch);
 
     // --- camera ---
     if (view.rotateFollow) {
@@ -357,7 +368,13 @@ export function createScene(canvas, G) {
   }
 
   resize();
-  return { renderer, scene, camera, resize, buildLevel, coneHit, update, project, aim, updateSkids, clearSkids, skidCountDbg: () => skidVerts.length/18 };
+  // debug: world positions of the two ends of the coupling (should coincide every frame)
+  function hitchDbg() {
+    const a = car.hitchAnchor.getWorldPosition(new THREE.Vector3());
+    const b = trailer.tilt.getWorldPosition(new THREE.Vector3());   // trailer's pivot = its tongue tip
+    return { car: [a.x, a.y, a.z], tongue: [b.x, b.y, b.z], gap: a.distanceTo(b) };
+  }
+  return { renderer, scene, camera, resize, buildLevel, coneHit, update, project, aim, updateSkids, clearSkids, hitchDbg, skidCountDbg: () => skidVerts.length/18 };
 }
 
 // =========================================================================
@@ -383,6 +400,11 @@ function buildCar(G) {
   // small cream roof cap blended into it, round headlight "eyes", little fender
   // bulges over fat wheels. No box-with-a-thing-on-top, so no "pill".
   const group = new THREE.Group();
+  // sprung mass: everything but the wheels lives in `tilt`, which pitches/rolls about the
+  // car's centre (at ~CoG height) while the wheels stay planted on the tarmac. `inner`
+  // cancels the pivot offset so meshes keep their natural body-frame coordinates.
+  const tilt = new THREE.Group(), inner = new THREE.Group();
+  tilt.add(inner); group.add(tilt);
   const bodyMat  = mat(COL.carBody, { r: 0.45, m: 0.12 });
   const roofMat  = mat(COL.carRoof, { r: 0.5, m: 0.05 });
   const glassMat = mat(COL.glass, { r: 0.06, m: 0.6 });
@@ -395,11 +417,24 @@ function buildCar(G) {
   const len = 2 * G.CAR_HL, wid = G.carW, wheelR = G.wheelL / 2 + 1.5, yb = wheelR;
   const frontX = G.CAR_CTR + G.CAR_HL, rearX = G.CAR_CTR - G.CAR_HL, cx = G.CAR_CTR;
 
+  // pitch/roll pivot: car centre, a little above the axles (a plausible roll centre)
+  const pvY = yb + 5;
+  tilt.position.set(cx, pvY, 0); inner.position.set(-cx, -pvY, 0);
+
+  // hitch coupling anchor: bolted to the sprung body (so it rides the car's pitch/roll),
+  // at the tow point hitchC behind the rear axle and at the trailer's tongue height. The
+  // trailer hangs off this exact world point, so the joint never separates. (couplingY
+  // matches the trailer's tongue height = its wheel radius.)
+  const couplingY = G.wheelL / 2 + 1;
+  const hitchAnchor = new THREE.Object3D();
+  hitchAnchor.position.set(-G.hitchC, couplingY, 0);
+  inner.add(hitchAnchor);
+
   // faceted scaled-sphere helper (rx,ry,rz are radii)
   const dome = (mtl, rx, ry, rz, x, y, z = 0, wseg = 14, hseg = 10) => {
     const m = new THREE.Mesh(new THREE.SphereGeometry(1, wseg, hseg), mtl);
     m.scale.set(rx, ry, rz); m.position.set(x, y, z);
-    m.castShadow = true; m.receiveShadow = true; group.add(m); return m;
+    m.castShadow = true; m.receiveShadow = true; inner.add(m); return m;
   };
 
   // rounded body shell — one continuous bulge spanning the footprint
@@ -411,14 +446,14 @@ function buildCar(G) {
   // round headlight "eyes" + taillights (slightly squashed discs facing out)
   const lamp = new THREE.SphereGeometry(2.9, 10, 8);
   for (const z of [-wid * 0.30, wid * 0.30]) {
-    const hl = new THREE.Mesh(lamp, headMat); hl.scale.set(0.6, 1, 1); hl.position.set(frontX - 2.5, yb + 6, z); group.add(hl);
-    const tl = new THREE.Mesh(lamp, tailMat); tl.scale.set(0.6, 0.9, 1); tl.position.set(rearX + 2.5, yb + 6.5, z); group.add(tl);
+    const hl = new THREE.Mesh(lamp, headMat); hl.scale.set(0.6, 1, 1); hl.position.set(frontX - 2.5, yb + 6, z); inner.add(hl);
+    const tl = new THREE.Mesh(lamp, tailMat); tl.scale.set(0.6, 0.9, 1); tl.position.set(rearX + 2.5, yb + 6.5, z); inner.add(tl);
   }
   // chrome bumpers
   const fB = new THREE.Mesh(new THREE.BoxGeometry(3.5, 4.5, wid * 0.86), chromeMat);
-  fB.position.set(frontX - 2, yb + 2.6, 0); fB.castShadow = true; group.add(fB);
+  fB.position.set(frontX - 2, yb + 2.6, 0); fB.castShadow = true; inner.add(fB);
   const rB = new THREE.Mesh(new THREE.BoxGeometry(3.5, 4.5, wid * 0.86), chromeMat);
-  rB.position.set(rearX + 2, yb + 2.6, 0); rB.castShadow = true; group.add(rB);
+  rB.position.set(rearX + 2, yb + 2.6, 0); rB.castShadow = true; inner.add(rB);
 
   // chunky wheels at the axles (front pair steers) + little fender bulges
   const wheelGeo = new THREE.CylinderGeometry(wheelR, wheelR, G.wheelW + 4, 14);
@@ -435,11 +470,19 @@ function buildCar(G) {
   mkWheel(0, -G.carTrack / 2, false); mkWheel(0, G.carTrack / 2, false);
   mkWheel(G.L, -G.carTrack / 2, true); mkWheel(G.L, G.carTrack / 2, true);
 
-  return { group, steer: (d) => { for (const w of frontWheels) w.rotation.y = -d; } };
+  return { group, tilt, hitchAnchor, steer: (d) => { for (const w of frontWheels) w.rotation.y = -d; } };
 }
 
 function buildTrailer(G) {
   const group = new THREE.Group();
+  // the rigid trailer pitches/rolls about its TONGUE TIP (the hitch coupling point), so the
+  // tongue never leaves the car's hitch. Pitch is derived in update() to keep the axle on the
+  // ground; roll is the trailer's own sprung lean (the ball joint allows it). couplingY is the
+  // tongue height — the trailer wheel radius — matching the car's hitch anchor height.
+  const couplingY = G.wheelL / 2 + 1;
+  const tilt = new THREE.Group(), inner = new THREE.Group();
+  tilt.add(inner); group.add(tilt);
+  tilt.position.set(0, couplingY, 0); inner.position.set(0, -couplingY, 0);
   const bedMat    = mat(COL.trailerBed, { r: 0.8, m: 0.0 });
   const railMat   = mat(COL.trailerRail, { r: 0.6, m: 0.25 });
   const tongueMat = mat(COL.tongue, { r: 0.6, m: 0.3, flat: false });
@@ -455,49 +498,49 @@ function buildTrailer(G) {
   // flat open deck
   const deck = new THREE.Mesh(new THREE.BoxGeometry(len, deckH, wid), bedMat);
   deck.position.set(ctr, deckY, 0); deck.castShadow = deck.receiveShadow = true;
-  group.add(deck);
+  inner.add(deck);
 
   // low side + front rails (open at the back, like a utility trailer)
   const railH = 5, railT = 2;
   for (const z of [-wid / 2 + railT / 2, wid / 2 - railT / 2]) {
     const r = new THREE.Mesh(new THREE.BoxGeometry(len, railH, railT), railMat);
-    r.position.set(ctr, topY + railH / 2, z); r.castShadow = true; group.add(r);
+    r.position.set(ctr, topY + railH / 2, z); r.castShadow = true; inner.add(r);
   }
   const frontRail = new THREE.Mesh(new THREE.BoxGeometry(railT, railH + 3, wid), railMat);
   frontRail.position.set(ctr - len / 2 + railT / 2, topY + (railH + 3) / 2, 0);
-  frontRail.castShadow = true; group.add(frontRail);
+  frontRail.castShadow = true; inner.add(frontRail);
 
   // A-frame tongue from the deck to the hitch (x=0)
   const tongue = new THREE.Mesh(new THREE.BoxGeometry(G.boxFront, 3.5, 4), tongueMat);
-  tongue.position.set(-G.boxFront / 2, deckY - 1, 0); tongue.castShadow = true; group.add(tongue);
+  tongue.position.set(-G.boxFront / 2, deckY - 1, 0); tongue.castShadow = true; inner.add(tongue);
 
   // ---- cargo: mismatched junk strapped to the deck ----
-  group.add(boxMesh(mat(COL.crateA, { flat: true }), 22, 17, 20, ctr - 7, topY, -2, 0.12));      // big amber crate
-  group.add(boxMesh(mat(COL.crateB, { flat: true }), 13, 11, 13, ctr - 11, topY + 17, 5, -0.2));  // small teal crate stacked on top
+  inner.add(boxMesh(mat(COL.crateA, { flat: true }), 22, 17, 20, ctr - 7, topY, -2, 0.12));      // big amber crate
+  inner.add(boxMesh(mat(COL.crateB, { flat: true }), 13, 11, 13, ctr - 11, topY + 17, 5, -0.2));  // small teal crate stacked on top
   const barrel = new THREE.Mesh(new THREE.CylinderGeometry(7, 7, 17, 10), mat(COL.barrel, { flat: true }));
-  barrel.position.set(ctr + 13, topY + 8.5, 6); barrel.castShadow = barrel.receiveShadow = true; group.add(barrel);
+  barrel.position.set(ctr + 13, topY + 8.5, 6); barrel.castShadow = barrel.receiveShadow = true; inner.add(barrel);
   const plank = new THREE.Mesh(new THREE.BoxGeometry(42, 2.5, 7), mat(COL.plank, { flat: true }));
   plank.position.set(ctr + 2, topY + 11, -9); plank.rotation.z = 0.14; plank.rotation.y = 0.12;
-  plank.castShadow = true; group.add(plank);
+  plank.castShadow = true; inner.add(plank);
 
   // tie-down straps over the load
   for (const x of [ctr - 8, ctr + 9]) {
     const s = new THREE.Mesh(new THREE.BoxGeometry(2.4, 24, wid + 2), strapMat);
-    s.position.set(x, topY + 9, 0); group.add(s);
+    s.position.set(x, topY + 9, 0); inner.add(s);
   }
 
   // rear reflectors on the deck corners
   for (const z of [-wid * 0.34, wid * 0.34]) {
     const tl = new THREE.Mesh(new THREE.BoxGeometry(2.4, 4, 5), tailMat);
-    tl.position.set(-G.boxBack + 1, topY + 2, z); group.add(tl);
+    tl.position.set(-G.boxBack + 1, topY + 2, z); inner.add(tl);
   }
 
   const wheelGeo = new THREE.CylinderGeometry(wheelR, wheelR, G.wheelW + 3, 12);
   for (const z of [-G.trailerTrack / 2, G.trailerTrack / 2]) {
     const w = new THREE.Mesh(wheelGeo, wheelMat); w.rotation.x = Math.PI / 2;
-    w.position.set(-G.draw_d, wheelR, z); w.castShadow = true; group.add(w);
+    w.position.set(-G.draw_d, wheelR, z); w.castShadow = true; inner.add(w);
   }
-  return { group };
+  return { group, tilt };
 }
 
 function buildBay(b, dims, parent) {
