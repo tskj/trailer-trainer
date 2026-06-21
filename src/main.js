@@ -129,7 +129,7 @@ import { createScene } from './render3d.js';
   let st, cam, level, levelIdx, holdT, levelDone, faults, wasCone, hitWall, hitCone, inPosition, fitNow;
   let dead, deadT, sampleT, snaps, locked=false, camRot=0, thrDisp=0, teleported=false, mouseSteer=false, camSnap=false;
   let rotateFollow=true;
-  let runPath=0, runTime=0, runMoving=false, naming=false, pending=null, myEntry=null;
+  let runPath=0, runTime=0, runMoving=false, naming=false, pending=null, myEntry=null, bayGlowCur=0;
   const completed = new Set(), flawless = new Set();   // flawless = cleared with zero cones touched
   // leaderboards: per level, two top-N lists (shortest distance, quickest time).
   // ranking is cones-first (fewer touched always wins), then the metric. persisted if storage allows.
@@ -167,6 +167,12 @@ import { createScene } from './render3d.js';
   const _C=_rgbLab("#39c2d7"), _A=_rgbLab("#f59f3b"), _Wn=_rgbLab("#ff5a52");
   function steerColor(t){ let p,q,f; if(t<=0.55){p=_C;q=_A;f=t/0.55;} else {p=_A;q=_Wn;f=(t-0.55)/0.45;}
     return _labRgb([0,1,2].map(i=>p[i]+(q[i]-p[i])*f)); }
+  // bay glow fill: saturated yellow -> green (OKLab); low blue so it reads clearly yellow, not pale
+  const _bayLo=_rgbLab("#ffe84d"), _bayHi=_rgbLab("#5cdb8a");
+  function bayColorAt(t){ return _labRgb([0,1,2].map(i=>_bayLo[i]+(_bayHi[i]-_bayLo[i])*t)); }
+  // dashed border: an even punchier / brighter saturated yellow -> green
+  const _beLo=_rgbLab("#ffea00"), _beHi=_rgbLab("#2ec862");
+  function bayEdgeAt(t){ return _labRgb([0,1,2].map(i=>_beLo[i]+(_beHi[i]-_beLo[i])*t)); }
 
   // ---- audio buzzer ----
   let actx=null;
@@ -346,7 +352,7 @@ import { createScene } from './render3d.js';
       st.x += -Math.sin(s.th)*d; st.y += Math.cos(s.th)*d; }
     holdT=0; levelDone=false; faults=0; wasCone=false; hitWall=false; hitCone=false; inPosition=false; fitNow=false;
     runPath=0; runTime=0; runMoving=false; myEntry=null;
-    dead=false; deadT=0; sampleT=0;
+    dead=false; deadT=0; sampleT=0; bayGlowCur=0;
     trails.front.length=trails.rear.length=trails.trailer.length=0;
     cam={x:s.x,y:s.y}; camRot = -Math.PI/2 - st.theta; camSnap=true;
     snaps=[snapshot()];   // always have at least one fallback
@@ -410,6 +416,21 @@ import { createScene } from './render3d.js';
     if(level.bay.fit==="trailer") return allIn(tb,bay,3);
     if(level.bay.fit==="car")     return allIn(cb,bay,3);
     return allIn(cb,bay,3) && allIn(tb,bay,3);
+  }
+  // 0..1 progress of the target sitting in the bay — drives the gradual amber->green
+  // bay glow. Smooth: each corner ramps up as it crosses the edge into the bay.
+  function bayFitGlow(){
+    if(!level.bay) return 0;
+    if(levelDone) return 1;
+    const d=bayDims(level.bay), bay={cx:level.bay.x,cy:level.bay.y,ang:level.bay.ang,hl:d.hl,hw:d.hw};
+    const prog = box => { let sum=0;
+      for(const p of corners(box)){ const dx=p[0]-bay.cx,dy=p[1]-bay.cy,c=Math.cos(bay.ang),s=Math.sin(bay.ang);
+        const lx=dx*c+dy*s, ly=-dx*s+dy*c;
+        sum += clamp(Math.min((bay.hl+3)-Math.abs(lx),(bay.hw+3)-Math.abs(ly))/12, 0, 1); }
+      return sum/4; };
+    if(level.bay.fit==="car") return prog(carBox());
+    if(level.bay.fit==="rig") return Math.min(prog(carBox()),prog(trailerBox()));
+    return prog(trailerBox());
   }
 
   function triggerDead(kind){
@@ -594,9 +615,10 @@ import { createScene } from './render3d.js';
     if(trailsOn && !dead){ pushTrail(trails.front,frontX,frontY); pushTrail(trails.rear,rs.x,rs.y); pushTrail(trails.trailer,trAxX,trAxY); }
 
     // hand the interpolated pose + view state to the 3D renderer
+    bayGlowCur += (bayFitGlow() - bayGlowCur) * 0.12;     // ease, then interpolate the glow colour in OKLab
     R.update(
       {x:rs.x, y:rs.y, theta:rs.theta, phi:rs.phi, delta:rs.delta},
-      {camX:cam.x, camY:cam.y, camRot, rotateFollow, bayActive:(inPosition||levelDone), trails, trailsOn, dead}
+      {camX:cam.x, camY:cam.y, camRot, rotateFollow, bayColor:bayColorAt(bayGlowCur), bayEdge:bayEdgeAt(bayGlowCur), trails, trailsOn, dead}
     );
 
     // skidmarks: lay rubber at the rear wheels when the tail slips/spins, and at the

@@ -20,6 +20,7 @@ const WALL_H = 34;                    // raised-region / wall height
 const TRAIL_Y = 0.6;                  // trail ribbon height above ground
 const DISPLAY_FOV = 52;               // the framing the player sees
 const OVERSCAN = 1.12;                // render this much wider so the lens barrel can sample outward
+const SS = 2;                         // supersample: render the scene SS x larger and box-downsample (AA)
 
 // ---- palette (sRGB hex; vibrant + cute) ----
 const COL = {
@@ -69,12 +70,16 @@ export function createScene(canvas, G) {
   const fovWide = 2 * Math.atan(Math.tan(DISPLAY_FOV * Math.PI / 360) * OVERSCAN) * 180 / Math.PI;
   const camera = new THREE.PerspectiveCamera(fovWide, 1, 1, 12000);
 
-  // ---- HDR target + hand-written grade pass ----
-  let rt = makeTarget(1, 1);
-  const post = makePost();
-  const quadScene = new THREE.Scene();
+  // ---- HDR target (supersampled), bloom buffers, hand-written grade pass ----
+  let rt = makeTarget(1, 1);                          // scene, rendered SS x larger
+  let brightRT = makeTarget(1, 1, { depth: false });  // bloom: extracted highlights
+  let blurA = makeTarget(1, 1, { depth: false });
+  let blurB = makeTarget(1, 1, { depth: false });
+  const post = makePost(), bright = makeBright(), blur = makeBlur();
   const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  quadScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), post.material));
+  const quadMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), post.material);
+  const quadScene = new THREE.Scene(); quadScene.add(quadMesh);
+  const drawQuad = (mat, target) => { quadMesh.material = mat; renderer.setRenderTarget(target || null); renderer.render(quadScene, quadCam); };
 
   // ---- environment + sky ----
   const env = buildEnvironment(renderer);
@@ -197,7 +202,8 @@ export function createScene(canvas, G) {
   }
   function clearSkids() { skidVerts = []; for (const k in skidLast) skidLast[k] = null; const old=skidMesh.geometry; skidMesh.geometry=new THREE.BufferGeometry(); old.dispose(); }
 
-  let bay = null;   // {group, frame:[mats], pad}
+  let bay = null;   // { group, fillMat, border }
+  const WHITE = new THREE.Color(1, 1, 1);
 
   // ------------------------------------------------------------------ API
   function resize() {
@@ -205,8 +211,12 @@ export function createScene(canvas, G) {
     renderer.setSize(w, h, false);
     camera.aspect = w / h; camera.updateProjectionMatrix();
     const pr = renderer.getPixelRatio();
-    rt.setSize(Math.max(1, Math.floor(w * pr)), Math.max(1, Math.floor(h * pr)));
-    post.material.uniforms.uRes.value.set(w * pr, h * pr);
+    const W = Math.max(1, Math.floor(w * pr * SS)), H = Math.max(1, Math.floor(h * pr * SS));
+    rt.setSize(W, H);
+    post.material.uniforms.uRes.value.set(W, H);
+    const bw = Math.max(1, Math.floor(w * pr)), bh = Math.max(1, Math.floor(h * pr));   // bloom at ~display res
+    brightRT.setSize(bw, bh); blurA.setSize(bw, bh); blurB.setSize(bw, bh);
+    blur.texel.set(1 / bw, 1 / bh);
   }
 
   function buildLevel(level, bayDims) {
@@ -291,12 +301,10 @@ export function createScene(canvas, G) {
     sun.target.position.set(pose.x, 0, pose.y);
     sun.position.set(pose.x + SUN_DIR.x * 500, SUN_DIR.y * 500, pose.y + SUN_DIR.z * 500);
 
-    // --- bay color ---
-    if (bay) {
-      const col = view.bayActive ? COL.bayGood : COL.bay;
-      bay.pad.material.color.set(col);
-      bay.pad.material.emissive.set(col);
-      for (const fm of bay.frame) { fm.color.set(col); fm.emissive.set(col); }
+    // --- bay glow: colour (OKLab-interpolated yellow->green) is computed in the loop ---
+    if (bay && view.bayColor) {
+      bay.fillMat.uniforms.uColor.value.set(view.bayColor);
+      bay.border.material.color.set(view.bayEdge || view.bayColor).lerp(WHITE, 0.45).multiplyScalar(3.8);  // hot-white core; bloom carries the yellow/green glow
     }
 
     // --- trails ---
@@ -308,12 +316,26 @@ export function createScene(canvas, G) {
       }
     }
 
-    // --- render: scene -> HDR target -> grade pass -> screen ---
+    // --- render: scene -> HDR (supersampled) -> bloom -> grade -> screen ---
     renderer.setRenderTarget(rt);
     renderer.render(scene, camera);
-    renderer.setRenderTarget(null);
+    // bloom: extract highlights, then two widening separable-gaussian iterations
+    bright.material.uniforms.uScene.value = rt.texture;
+    drawQuad(bright.material, brightRT);
+    let bsrc = brightRT;
+    for (let i = 0; i < 2; i++) {
+      blur.material.uniforms.uTex.value = bsrc.texture;
+      blur.material.uniforms.uDir.value.set(blur.texel.x * (i + 1), 0);
+      drawQuad(blur.material, blurA);
+      blur.material.uniforms.uTex.value = blurA.texture;
+      blur.material.uniforms.uDir.value.set(0, blur.texel.y * (i + 1));
+      drawQuad(blur.material, blurB);
+      bsrc = blurB;
+    }
+    // composite to screen
     post.material.uniforms.uScene.value = rt.texture;
-    renderer.render(quadScene, quadCam);
+    post.material.uniforms.uBloom.value = blurB.texture;
+    drawQuad(post.material, null);
   }
 
   function project(x, y) {
@@ -423,7 +445,7 @@ function buildTrailer(G) {
   const tongueMat = mat(COL.tongue, { r: 0.6, m: 0.3, flat: false });
   const wheelMat  = mat(COL.wheel, { r: 0.75, flat: false });
   const strapMat  = mat(COL.strap, { r: 0.85, m: 0.0 });
-  const tailMat   = emat(COL.taillight, 0.7);
+  const tailMat   = emat(COL.taillight, 2.2);   // HDR-bright so the bloom pass glows the tail lights
 
   const len = 2 * G.TR_HL, wid = G.trailerW, wheelR = G.wheelL / 2 + 1;
   const ctr = -G.TR_CTR;
@@ -482,30 +504,60 @@ function buildBay(b, dims, parent) {
   const group = new THREE.Group();
   group.position.set(b.x, 0, b.y); group.rotation.y = -b.ang;
   const hl = dims.hl, hw = dims.hw;
-  const padMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(COL.bay), emissive: new THREE.Color(COL.bay), emissiveIntensity: 0.35,
-    transparent: true, opacity: 0.22, roughness: 1, metalness: 0, depthWrite: false,
-    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,   // beat ground z-fighting
-  });
-  const pad = new THREE.Mesh(new THREE.PlaneGeometry(hl * 2, hw * 2), padMat);
-  pad.rotation.x = -Math.PI / 2; pad.position.y = 0.25; pad.receiveShadow = false;
-  group.add(pad);
 
-  // border frame: 4 thin emissive bars
-  const frame = [];
-  const t = 2.2, yb = 0.8;
-  const bars = [
-    [0, -hw, hl * 2, t], [0, hw, hl * 2, t],     // top/bottom (along local x)
-    [-hl, 0, t, hw * 2], [hl, 0, t, hw * 2],      // left/right (along local z)
-  ];
-  for (const [cx, cz, sx, sz] of bars) {
-    const m = new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.bay), emissive: new THREE.Color(COL.bay), emissiveIntensity: 0.8, roughness: 0.7, metalness: 0 });
-    const bar = new THREE.Mesh(new THREE.BoxGeometry(sx, 1.4, sz), m);
-    bar.position.set(cx, yb, cz);
-    group.add(bar); frame.push(m);
+  // superellipse outline — higher exponent = smaller corner radius (closer to a rectangle)
+  const N = 160, ex = 6;
+  const sp = [];
+  for (let i = 0; i < N; i++) {
+    const t = i / N * Math.PI * 2, ct = Math.cos(t), st = Math.sin(t);
+    sp.push([hl * Math.sign(ct) * Math.pow(Math.abs(ct), 2 / ex),
+             hw * Math.sign(st) * Math.pow(Math.abs(st), 2 / ex)]);
   }
+
+  // uniform saturated fill, emitted bright (HDR > 1) so the bloom pass makes it glow.
+  const fillMat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
+    uniforms: { uColor: { value: new THREE.Color('#ffe84d') } },
+    vertexShader: `void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+    fragmentShader: `uniform vec3 uColor; void main(){ gl_FragColor = vec4(uColor * 5.5, 0.22); }`,
+  });
+  const fillGeo = new THREE.ShapeGeometry(new THREE.Shape(sp.map(p => new THREE.Vector2(p[0], p[1]))));
+  fillGeo.rotateX(-Math.PI / 2);
+  const fill = new THREE.Mesh(fillGeo, fillMat);
+  fill.position.y = 0.25;
+  group.add(fill);
+
+  // evenly dashed border ribbon: resample the outline by arc length so every dash is the
+  // same length and the dash/gap pattern wraps seamlessly around the loop.
+  const seg = [], cum = [0]; let total = 0;
+  for (let i = 0; i < N; i++) { const a = sp[i], c = sp[(i + 1) % N]; const l = Math.hypot(c[0]-a[0], c[1]-a[1]); seg.push(l); total += l; cum.push(total); }
+  const at = s => { s = ((s % total) + total) % total; let i = 0; while (i < N - 1 && cum[i+1] < s) i++; const a = sp[i], c = sp[(i+1) % N], f = (s - cum[i]) / (seg[i] || 1e-6); return [a[0]+(c[0]-a[0])*f, -(a[1]+(c[1]-a[1])*f)]; };
+  const periods = Math.max(6, Math.round(total / 22)), period = total / periods, dashLen = period * 0.66, hwid = 1.6;
+  const pos = [], idx = []; let vi = 0;
+  for (let k = 0; k < periods; k++) {
+    const ds = k * period, subs = Math.max(2, Math.ceil(dashLen / 4));
+    let prev = at(ds);
+    for (let j = 1; j <= subs; j++) {
+      const cur = at(ds + dashLen * j / subs);
+      const dx = cur[0]-prev[0], dz = cur[1]-prev[1], len = Math.hypot(dx, dz) || 1e-6;
+      const nx = -dz/len*hwid, nz = dx/len*hwid;
+      pos.push(prev[0]+nx,0,prev[1]+nz, cur[0]+nx,0,cur[1]+nz, cur[0]-nx,0,cur[1]-nz, prev[0]-nx,0,prev[1]-nz);
+      idx.push(vi,vi+1,vi+2, vi,vi+2,vi+3); vi += 4;
+      prev = cur;
+    }
+  }
+  const bgeo = new THREE.BufferGeometry();
+  bgeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  bgeo.setIndex(idx);
+  const border = new THREE.Mesh(bgeo, new THREE.MeshBasicMaterial({
+    color: new THREE.Color('#ffea00'), transparent: true, opacity: 1.0, depthWrite: false, side: THREE.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -6 }));
+  border.position.y = 0.6;
+  group.add(border);
+
   parent.add(group);
-  return { group, frame, pad };
+  return { group, fillMat, border };
 }
 
 // =========================================================================
@@ -589,10 +641,10 @@ function makeTrail(color) {
   return line;
 }
 
-function makeTarget(w, h) {
+function makeTarget(w, h, opts = {}) {
   return new THREE.WebGLRenderTarget(w, h, {
     type: THREE.HalfFloatType, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
-    colorSpace: THREE.NoColorSpace, depthBuffer: true,
+    colorSpace: THREE.NoColorSpace, depthBuffer: opts.depth !== false,
   });
 }
 
@@ -602,16 +654,18 @@ function makePost() {
   const material = new THREE.ShaderMaterial({
     uniforms: {
       uScene: { value: null },
-      uRes: { value: new THREE.Vector2(1, 1) },
+      uBloom: { value: null },
+      uRes: { value: new THREE.Vector2(1, 1) },       // scene RT size (supersampled)
       uExposure: { value: 1.7 },
       uLens: { value: 0.06 },             // droste used 0.05; 0 = off. radial barrel strength
       uOverscan: { value: OVERSCAN },
+      uBloom_k: { value: 1.0 },           // bloom add strength
     },
     vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
     fragmentShader: `
       precision highp float;
-      varying vec2 vUv; uniform sampler2D uScene; uniform vec2 uRes;
-      uniform float uExposure; uniform float uLens; uniform float uOverscan;
+      varying vec2 vUv; uniform sampler2D uScene, uBloom; uniform vec2 uRes;
+      uniform float uExposure, uLens, uOverscan, uBloom_k;
       void main(){
         // droste lens: radial  lens = uLens * |uv|^2 * uv  (aspect-correct, square units,
         // long axis spanning [-1,1]). Crop the overscanned render back, then sample OUTWARD
@@ -623,7 +677,13 @@ function makePost() {
         vec2 uvd = uv / uOverscan + lens;
         vec2 sp  = vec2(uvd.x, uvd.y * aspect);     // undo aspect
         vec2 suv = clamp(sp * 0.5 + 0.5, 0.0, 1.0);
-        vec3 c = texture2D(uScene, suv).rgb;
+        // supersample: box-average the SSxSS block (the scene RT is rendered SS x larger)
+        vec2 tx = 1.0 / uRes;
+        vec3 c = ( texture2D(uScene, suv + vec2( 0.5, 0.5) * tx).rgb
+                 + texture2D(uScene, suv + vec2(-0.5, 0.5) * tx).rgb
+                 + texture2D(uScene, suv + vec2( 0.5,-0.5) * tx).rgb
+                 + texture2D(uScene, suv + vec2(-0.5,-0.5) * tx).rgb ) * 0.25;
+        c += texture2D(uBloom, suv).rgb * uBloom_k;   // add the blurred highlights = glow
         // exponential tonemap (droste): 1 - exp(-exposure * c) + tiny linear toe
         c = vec3(1.0) - exp(-uExposure * c) + 0.012 * c;
         // gentle vignette (on undistorted screen position)
@@ -634,4 +694,39 @@ function makePost() {
       }`,
   });
   return { material };
+}
+
+// bloom bright-pass: keep only the radiance above a threshold (so just the hot bay glows)
+function makeBright() {
+  const material = new THREE.ShaderMaterial({
+    uniforms: { uScene: { value: null }, uThreshold: { value: 1.35 } },
+    vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+    fragmentShader: `
+      precision highp float;
+      varying vec2 vUv; uniform sampler2D uScene; uniform float uThreshold;
+      void main(){
+        vec3 c = texture2D(uScene, vUv).rgb;
+        gl_FragColor = vec4(max(c - vec3(uThreshold), 0.0), 1.0);   // per-channel: a white-hot core blooms in its dominant colour
+      }`,
+  });
+  return { material };
+}
+
+// separable 9-tap gaussian (5 linear samples). uDir = texel * direction.
+function makeBlur() {
+  const material = new THREE.ShaderMaterial({
+    uniforms: { uTex: { value: null }, uDir: { value: new THREE.Vector2() } },
+    vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+    fragmentShader: `
+      precision highp float;
+      varying vec2 vUv; uniform sampler2D uTex; uniform vec2 uDir;
+      void main(){
+        vec3 c = texture2D(uTex, vUv).rgb * 0.227027;
+        vec2 o1 = uDir * 1.3846153846, o2 = uDir * 3.2307692308;
+        c += (texture2D(uTex, vUv + o1).rgb + texture2D(uTex, vUv - o1).rgb) * 0.3162162162;
+        c += (texture2D(uTex, vUv + o2).rgb + texture2D(uTex, vUv - o2).rgb) * 0.0702702703;
+        gl_FragColor = vec4(c, 1.0);
+      }`,
+  });
+  return { material, texel: new THREE.Vector2() };
 }
