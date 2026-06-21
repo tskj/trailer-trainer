@@ -164,7 +164,15 @@ import { createScene } from './render3d.js';
       bay:{x:80,y:90,ang:Math.PI/2,fit:"trailer"},
       obstacles:[ {t:"half",axis:"y",at:-129,sign:-1},
                   {t:"half",axis:"y",at:152,sign:1},
-                  {t:"cone",x:44,y:48},{t:"cone",x:116,y:48} ] }
+                  {t:"cone",x:44,y:48},{t:"cone",x:116,y:48} ] },
+
+    { id:"slalom", name:"9 · Reverse slalom ↩",
+      goal:"The capstone, all in reverse: weave the trailer back through the cone slalom — left of one, right of the next — then straighten it into the bay at the end. The lane walls leave no room to cheat wide, and clipping a cone now ends the run.",
+      start:{x:0,y:840,th:Math.PI/2},
+      bay:{x:0,y:-310,ang:Math.PI/2,fit:"trailer"},
+      obstacles:[ {t:"half",axis:"x",at:-56,sign:-1}, {t:"half",axis:"x",at:56,sign:1},
+                  {t:"cone",x:-18,y:-380},{t:"cone",x:18,y:-380},
+                  {t:"cone",x:-18,y:610},{t:"cone",x:18,y:420},{t:"cone",x:-18,y:230},{t:"cone",x:18,y:40},{t:"cone",x:-18,y:-150} ] }
   ];
 
   // ---- state ----
