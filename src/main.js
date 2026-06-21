@@ -79,13 +79,13 @@ import { createScene } from './render3d.js';
       obstacles:[ {t:"half",axis:"y",at:122,sign:1},
                   {t:"cone",x:116,y:18},{t:"cone",x:184,y:18} ] },
 
-    { id:"l3", name:"3 · 90° alley dock",
-      goal:"Drive up the lane and PAST the bay, then back in with one continuous 90° turn. The long wall opposite leaves no room to straighten out.",
-      start:{x:-310,y:-30,th:0},
-      bay:{x:80,y:90,ang:Math.PI/2,fit:"trailer"},
-      obstacles:[ {t:"half",axis:"y",at:-129,sign:-1},
-                  {t:"half",axis:"y",at:152,sign:1},
-                  {t:"cone",x:44,y:48},{t:"cone",x:116,y:48} ] },
+    { id:"l6", name:"3 · Garage ↩",
+      goal:"Reverse the trailer all the way down the long cone channel and tuck it into the spot against the back wall — thread the cones, and stop before you hit the wall.",
+      start:{x:0,y:390,th:Math.PI/2}, perturb:0.04,
+      bay:{x:0,y:-70,ang:Math.PI/2,fit:"trailer"},
+      obstacles:[ {t:"half",axis:"y",at:-122,sign:-1},
+                  {t:"cone",x:-45,y:311},{t:"cone",x:-45,y:259},{t:"cone",x:-45,y:207},{t:"cone",x:-45,y:155},{t:"cone",x:-45,y:103},{t:"cone",x:-45,y:51},{t:"cone",x:-45,y:-1},{t:"cone",x:-45,y:-53},{t:"cone",x:-45,y:-105},
+                  {t:"cone",x:45,y:311},{t:"cone",x:45,y:259},{t:"cone",x:45,y:207},{t:"cone",x:45,y:155},{t:"cone",x:45,y:103},{t:"cone",x:45,y:51},{t:"cone",x:45,y:-1},{t:"cone",x:45,y:-53},{t:"cone",x:45,y:-105} ] },
 
     { id:"sweep", name:"4 · Short sweep ↩",
       goal:"Now in reverse: back the trailer around the bend and ease it up the far leg onto the pad. Keep the trailer off the wall the whole way around.",
@@ -109,27 +109,20 @@ import { createScene } from './render3d.js';
       obstacles:[ {t:"quad",ex:-1260,ey:-1260,ccx:0,ccy:0,r:1260,mode:"in",n:8} ] },
 
     { id:"l5", name:"7 · Parallel park",
-      goal:"Back the trailer into the slot between the two parked cars, parallel to the curb.",
-      start:{x:-160,y:85,th:0},
+      goal:"Back the trailer into the cone-marked slot against the curb. You start past the far end facing away, so swing the rig round before you can reverse in. Three cones wall off one end, a single cone marks the other — don't clip them.",
+      start:{x:220,y:85,th:Math.PI},
       bay:{x:30,y:-12,ang:0,fit:"trailer"},
-      obstacles:[ W(-90,-12,0,30,15), W(150,-12,0,30,15),
+      obstacles:[ {t:"cone",x:-32,y:-36},{t:"cone",x:-32,y:-12},{t:"cone",x:-32,y:12},
+                  {t:"cone",x:175,y:8},
                   {t:"half",axis:"y",at:-49,sign:-1} ] },
 
-    { id:"l4", name:"8 · Inside the cut",
-      goal:"Turn left into the bay nose-first. The trailer cuts inside the car, so take the corner wide to keep it off the apex cones — but stay inside the walls.",
-      start:{x:-250,y:135,th:0},
-      bay:{x:165,y:-120,ang:Math.PI/2,fit:"car"},
-      obstacles:[ {t:"cone",x:80,y:78},{t:"cone",x:120,y:30},{t:"cone",x:150,y:-25},
-                  {t:"half",axis:"x",at:237,sign:1},
-                  {t:"half",axis:"y",at:180,sign:1},
-                  {t:"half",axis:"y",at:-189,sign:-1} ] },
-
-    { id:"l6", name:"9 · Garage (whole rig)",
-      goal:"Pull the entire rig — car and trailer — fully inside the garage without clipping the walls.",
-      start:{x:0,y:240,th:-Math.PI/2},
-      bay:{x:0,y:-30,ang:Math.PI/2,fit:"rig"},
-      obstacles:[ {t:"half",axis:"y",at:-149,sign:-1},
-                  W(-47,-30,Math.PI/2,132,11), W(47,-30,Math.PI/2,132,11) ] }
+    { id:"l3", name:"8 · 90° alley dock",
+      goal:"Drive up the lane and PAST the bay, then back in with one continuous 90° turn. The long wall opposite leaves no room to straighten out.",
+      start:{x:-310,y:-30,th:0},
+      bay:{x:80,y:90,ang:Math.PI/2,fit:"trailer"},
+      obstacles:[ {t:"half",axis:"y",at:-129,sign:-1},
+                  {t:"half",axis:"y",at:152,sign:1},
+                  {t:"cone",x:44,y:48},{t:"cone",x:116,y:48} ] }
   ];
 
   // ---- state ----
@@ -137,7 +130,7 @@ import { createScene } from './render3d.js';
   let dead, deadT, sampleT, snaps, locked=false, camRot=0, thrDisp=0, teleported=false, mouseSteer=false, camSnap=false;
   let rotateFollow=true;
   let runPath=0, runTime=0, runMoving=false, naming=false, pending=null, myEntry=null;
-  const completed = new Set();
+  const completed = new Set(), flawless = new Set();   // flawless = cleared with zero cones touched
   // leaderboards: per level, two top-N lists (shortest distance, quickest time).
   // ranking is cones-first (fewer touched always wins), then the metric. persisted if storage allows.
   const LB_N=5;
@@ -538,7 +531,7 @@ import { createScene } from './render3d.js';
     fitNow=checkFit(cb,tb);
     inPosition = fitNow && Math.abs(st.v)<5 && !hitWall;
     if(level.id!=="free"){
-      if(inPosition){ holdT+=dt; if(holdT>0.55 && !levelDone){ levelDone=true; completed.add(level.id); recordResult(); showBanner(); } }
+      if(inPosition){ holdT+=dt; if(holdT>0.55 && !levelDone){ levelDone=true; completed.add(level.id); if(faults===0) flawless.add(level.id); recordResult(); showBanner(); } }
       else holdT=0;
     }
 
@@ -695,7 +688,9 @@ import { createScene } from './render3d.js';
   }
   function renderBoard(elId, list, metric){
     const box=$(elId); box.replaceChildren();
-    if(!list||!list.length){ const d=document.createElement("div"); d.className="board-empty"; d.textContent="no entries yet"; box.appendChild(d); return; }
+    // show only each person's best run (list is sorted best-first, so keep the first per name)
+    const seen=new Set(); list=(list||[]).filter(e=>!seen.has(e.name)&&seen.add(e.name));
+    if(!list.length){ const d=document.createElement("div"); d.className="board-empty"; d.textContent="no entries yet"; box.appendChild(d); return; }
     list.forEach((e,i)=>{ const row=document.createElement("div"); row.className="brow"+(e===myEntry?" mine":"");
       const rank=document.createElement("span"); rank.className="br-rank"; rank.textContent=(i+1);
       const name=document.createElement("span"); name.className="br-name"; name.textContent=e.name;
@@ -723,8 +718,12 @@ import { createScene } from './render3d.js';
     const p=pending; if(!p){ closeNameModal(); return; }
     name=(name||"").trim().slice(0,14) || "Anon";
     p.entry.name=name; myEntry=p.entry;
-    if(p.qd){ p.lb.dist.push(p.entry); p.lb.dist.sort(cmp("dist")); if(p.lb.dist.length>LB_N) p.lb.dist.length=LB_N; }
-    if(p.qt){ p.lb.time.push(p.entry); p.lb.time.sort(cmp("time")); if(p.lb.time.length>LB_N) p.lb.time.length=LB_N; }
+    // one entry per person per board: replace their existing entry only if this run is better
+    const upsert=(list,e,metric)=>{ const j=list.findIndex(x=>x.name===e.name);
+      if(j>=0){ if(cmp(metric)(e,list[j])<0) list[j]=e; } else list.push(e);
+      list.sort(cmp(metric)); if(list.length>LB_N) list.length=LB_N; };
+    if(p.qd) upsert(p.lb.dist, p.entry, "dist");
+    if(p.qt) upsert(p.lb.time, p.entry, "time");
     lastName=name; try{ localStorage.setItem("trailerTrainer.lastName",name); }catch(e){}
     saveBoards(); pending=null; closeNameModal(); refreshBoards();
   }
@@ -743,7 +742,10 @@ import { createScene } from './render3d.js';
         b.innerHTML=`<span class="tick"></span>${lv.name}`; b.onclick=()=>loadLevel(i); list.appendChild(b); });
     }
     [...list.children].forEach((b,i)=>{ b.classList.toggle("active",i===levelIdx);
-      b.querySelector(".tick").textContent = completed.has(LEVELS[i].id)?"\u2713":""; });
+      const id=LEVELS[i].id, tick=b.querySelector(".tick");
+      if(flawless.has(id)){ tick.textContent="\u2713"; tick.style.color="var(--good)"; }          // green check = flawless
+      else if(completed.has(id)){ tick.textContent="\u2022"; tick.style.color="var(--amber)"; }   // amber dot = cleared but clipped a cone
+      else { tick.textContent=""; } });
   }
 
   $("btnTrails").onclick=e=>{ trailsOn=!trailsOn; e.target.textContent="Trails: "+(trailsOn?"on":"off"); e.target.classList.toggle("on",trailsOn); };
