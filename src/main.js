@@ -43,7 +43,7 @@ import { createScene } from './render3d.js';
 
   // ---- bays sized to the actual rig footprint ----
   const BAY = {
-    trailer:{ hl: TR_HL+13, hw: TR_HW+11 },
+    trailer:{ hl: TR_HL+9, hw: TR_HW+8 },
     car:    { hl: CAR_HL+13, hw: CAR_HW+11 },
     rig:    { hl: (CAR_HL+CAR_CTR + hitchC+boxBack)/2 + 14, hw: 15+9 }
   };
@@ -91,7 +91,8 @@ import { createScene } from './render3d.js';
       goal:"Now in reverse: back the trailer around the bend and ease it up the far leg onto the pad. Keep the trailer off the wall the whole way around.",
       start:{x:160,y:-398,th:0},
       bay:{x:-420,y:180,ang:Math.PI/2,fit:"trailer"},
-      obstacles:[ {t:"quad",ex:-360,ey:-360,ccx:0,ccy:0,r:360,mode:"in",n:8} ] },
+      obstacles:[ {t:"quad",ex:-360,ey:-360,ccx:0,ccy:0,r:360,mode:"in",n:8},
+                  {t:"cone",x:-438,y:250},{t:"cone",x:-402,y:250} ] },
 
     { id:"roundabout", name:"5 · Roundabout ↩",
       goal:"Reverse the trailer around the island and back it onto the pad in the left arm. The island’s on the inside — take it wide.",
@@ -100,13 +101,15 @@ import { createScene } from './render3d.js';
       obstacles:[ {t:"disc",cx:0,cy:0,r:85,mode:"in"},
                   {t:"quad",ex:110,ey:110,ccx:270,ccy:270,r:160,mode:"in",n:8},
                   {t:"quad",ex:110,ey:110,ccx:270,ccy:270,r:160,mode:"in",n:8,flipx:true},
-                  {t:"cone",x:-120,y:95},{t:"cone",x:-92,y:62} ] },
+                  {t:"cone",x:-120,y:95},{t:"cone",x:-92,y:62},
+                  {t:"cone",x:-410,y:-18},{t:"cone",x:-410,y:18} ] },
 
     { id:"sweepLong", name:"6 · Long sweep ↩",
       goal:"The big one, in reverse: back the trailer around the long, sustained bend and up onto the pad at the far end. Slow and smooth.",
       start:{x:-680,y:-1298,th:0},
       bay:{x:-1320,y:-720,ang:Math.PI/2,fit:"trailer"},
-      obstacles:[ {t:"quad",ex:-1260,ey:-1260,ccx:0,ccy:0,r:1260,mode:"in",n:8} ] },
+      obstacles:[ {t:"quad",ex:-1260,ey:-1260,ccx:0,ccy:0,r:1260,mode:"in",n:8},
+                  {t:"cone",x:-1338,y:-650},{t:"cone",x:-1302,y:-650} ] },
 
     { id:"l5", name:"7 · Parallel park",
       goal:"Back the trailer into the cone-marked slot against the curb. You start past the far end facing away, so swing the rig round before you can reverse in. Three cones wall off one end, a single cone marks the other — don't clip them.",
