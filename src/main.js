@@ -55,6 +55,11 @@ import { createScene } from './render3d.js';
   // ---- rewind double-buffer ----
   const SAMPLE_INTERVAL=1.5, DEAD_TIME=2.0;   // linger on the fail screen a bit longer before rewinding
 
+  // ---- every level starts the trailer slightly kinked (random side + amount) so you can
+  //      never just back dead-straight. A level may override with its own `perturb`, or set
+  //      perturb:0 to opt out. ----
+  const PERTURB=0.03, PERTURB_RAND=0.04;      // base + random extra (rad); ~1.7°–4° either way
+
   // ---- bays sized to the actual rig footprint ----
   const BAY = {
     trailer:{ hl: TR_HL+9, hw: TR_HW+8 },
@@ -81,7 +86,7 @@ import { createScene } from './render3d.js';
 
     { id:"l1", name:"1 · Straight back-in",
       goal:"Your first reverse. The trailer starts slightly kinked, so you can’t back dead straight — steer to line it up and back it to the wall. Clip a corner cone and it’s a fault; ram the wall and you reset.",
-      start:{x:0,y:-220,th:-Math.PI/2}, perturb:0.05,
+      start:{x:0,y:-220,th:-Math.PI/2},
       bay:{x:0,y:60,ang:Math.PI/2,fit:"trailer"},
       obstacles:[ {t:"half",axis:"y",at:122,sign:1},
                   {t:"cone",x:-40,y:18},{t:"cone",x:40,y:18} ] },
@@ -95,7 +100,7 @@ import { createScene } from './render3d.js';
 
     { id:"l6", name:"3 · Garage ↩",
       goal:"Reverse the trailer all the way down the long cone channel and tuck it into the spot against the back wall — thread the cones, and stop before you hit the wall.",
-      start:{x:0,y:390,th:Math.PI/2}, perturb:0.04,
+      start:{x:0,y:390,th:Math.PI/2},
       bay:{x:0,y:-70,ang:Math.PI/2,fit:"trailer"},
       obstacles:[ {t:"half",axis:"y",at:-122,sign:-1},
                   {t:"cone",x:-45,y:311},{t:"cone",x:-45,y:259},{t:"cone",x:-45,y:207},{t:"cone",x:-45,y:155},{t:"cone",x:-45,y:103},{t:"cone",x:-45,y:51},{t:"cone",x:-45,y:-1},{t:"cone",x:-45,y:-53},{t:"cone",x:-45,y:-105},
@@ -184,11 +189,11 @@ import { createScene } from './render3d.js';
   const _C=_rgbLab("#39c2d7"), _A=_rgbLab("#f59f3b"), _Wn=_rgbLab("#ff5a52");
   function steerColor(t){ let p,q,f; if(t<=0.55){p=_C;q=_A;f=t/0.55;} else {p=_A;q=_Wn;f=(t-0.55)/0.45;}
     return _labRgb([0,1,2].map(i=>p[i]+(q[i]-p[i])*f)); }
-  // bay glow fill: saturated yellow -> green (OKLab); low blue so it reads clearly yellow, not pale
-  const _bayLo=_rgbLab("#ffe84d"), _bayHi=_rgbLab("#5cdb8a");
+  // bay glow fill: warm amber -> green (OKLab); low blue + lower green so it reads gold/amber, not lime
+  const _bayLo=_rgbLab("#ffc233"), _bayHi=_rgbLab("#3fce6c");
   function bayColorAt(t){ return _labRgb([0,1,2].map(i=>_bayLo[i]+(_bayHi[i]-_bayLo[i])*t)); }
-  // dashed border: an even punchier / brighter saturated yellow -> green
-  const _beLo=_rgbLab("#ffea00"), _beHi=_rgbLab("#2ec862");
+  // dashed border: a punchier / brighter amber -> green
+  const _beLo=_rgbLab("#ffb01a"), _beHi=_rgbLab("#1fbe54");
   function bayEdgeAt(t){ return _labRgb([0,1,2].map(i=>_beLo[i]+(_beHi[i]-_beLo[i])*t)); }
 
   // ---- audio buzzer ----
@@ -364,7 +369,8 @@ import { createScene } from './render3d.js';
     const s=level.start;
     st={x:s.x,y:s.y,theta:s.th,phi:s.th,delta:0,v:0,vlat:0,omega:0,omegaT:0,
         pitch:0,pitchV:0,roll:0,rollV:0,trRoll:0,trRollV:0};
-    if(level.perturb){ const sgn=Math.random()<0.5?-1:1; st.phi = s.th + sgn*(level.perturb + Math.random()*0.06); }
+    const pb = level.perturb ?? PERTURB;
+    if(pb>0){ const sgn=Math.random()<0.5?-1:1; st.phi = s.th + sgn*(pb + Math.random()*PERTURB_RAND); }
     if(level.lateral){ const sgn=Math.random()<0.5?-1:1, d=sgn*level.lateral*(0.55+Math.random()*0.45);
       st.x += -Math.sin(s.th)*d; st.y += Math.cos(s.th)*d; }
     holdT=0; levelDone=false; faults=0; wasCone=false; hitWall=false; hitCone=false; inPosition=false; fitNow=false;

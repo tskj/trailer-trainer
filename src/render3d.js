@@ -55,6 +55,28 @@ const COL = {
 // ---- light rig (droste: 3 colored lights, none white) ----
 const clamp = (v, a, b) => (v < a ? a : (v > b ? b : v));
 const _hitch = new THREE.Vector3();                             // reused scratch for the hitch world point
+
+// droste-style shadow falloff: per-channel gamma on the sun's shadow mask, so the soft
+// penumbra trails warm (blue/green darken faster than red). exponents > 1 = darker channel.
+const PENUMBRA = new THREE.Vector3(1.0, 1.75, 2.9);
+// the exact dir-light shadow line in three's lights_fragment_begin (pinned three@0.184);
+// we splice the scalar shadow into a per-channel pow() right after it.
+const SHADOW_LINE = 'directLight.color *= ( directLight.visible && receiveShadow ) ? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowIntensity, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0;';
+// patch a MeshStandardMaterial so its sun shadow uses the warm per-channel falloff.
+// onBeforeCompile runs before #include resolution, so we expand the chunk from the live
+// ShaderChunk (its text always matches the installed three), splice in the pow(), and
+// inline it in place of the directive. A version mismatch just no-ops (no crash).
+function withPenumbra(material) {
+  const patched = THREE.ShaderChunk.lights_fragment_begin.replace(
+    SHADOW_LINE,
+    'float _shFac = ( directLight.visible && receiveShadow ) ? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowIntensity, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0;\n\t\tdirectLight.color *= pow( vec3( _shFac ), uPenumbra );');
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uPenumbra = { value: PENUMBRA };
+    shader.fragmentShader = 'uniform vec3 uPenumbra;\n' +
+      shader.fragmentShader.replace('#include <lights_fragment_begin>', patched);
+  };
+  return material;
+}
 const SUN_DIR = new THREE.Vector3(0.55, 1.0, 0.42).normalize(); // warm key, upper-front-right
 const SKY_DIR = new THREE.Vector3(0.0, 1.0, 0.0);               // cool fill from straight up
 const BNC_DIR = new THREE.Vector3(-0.55, 0.18, -0.42).normalize(); // warm bounce, anti-sun low
@@ -63,7 +85,7 @@ export function createScene(canvas, G) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFShadowMap;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;   // soft penumbra -> room for the warm colour trail
   renderer.toneMapping = THREE.NoToneMapping;          // we tonemap ourselves in the post pass
   renderer.outputColorSpace = THREE.SRGBColorSpace;
 
@@ -94,6 +116,8 @@ export function createScene(canvas, G) {
   sun.shadow.mapSize.set(2048, 2048);
   sun.shadow.bias = -0.0006;
   sun.shadow.normalBias = 1.2;
+  sun.shadow.radius = 6;          // wide PCF penumbra so the droste warm-trail falloff is visible
+  sun.shadow.blurSamples = 16;
   const sc = sun.shadow.camera;
   sc.near = 1; sc.far = 1400; sc.left = -260; sc.right = 260; sc.top = 260; sc.bottom = -260;
   scene.add(sun, sun.target);
@@ -108,7 +132,7 @@ export function createScene(canvas, G) {
   // ---- ground ----
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(24000, 24000),
-    new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.ground), roughness: 0.96, metalness: 0.0 })
+    withPenumbra(new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.ground), roughness: 0.96, metalness: 0.0 }))
   );
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
@@ -125,9 +149,9 @@ export function createScene(canvas, G) {
   scene.add(dyn);
 
   // shared cone materials (swap on hit)
-  const coneMat    = new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.cone), roughness: 0.55, metalness: 0.0, flatShading: true });
-  const coneHitMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.coneHit), roughness: 0.85, metalness: 0.0, flatShading: true });
-  const bandMat    = new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.coneBand), roughness: 0.5, emissive: new THREE.Color('#3a2a10'), emissiveIntensity: 0.4 });
+  const coneMat    = withPenumbra(new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.cone), roughness: 0.55, metalness: 0.0, flatShading: true }));
+  const coneHitMat = withPenumbra(new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.coneHit), roughness: 0.85, metalness: 0.0, flatShading: true }));
+  const bandMat    = withPenumbra(new THREE.MeshStandardMaterial({ color: new THREE.Color(COL.coneBand), roughness: 0.5, emissive: new THREE.Color('#3a2a10'), emissiveIntensity: 0.4 }));
   // out-of-bounds keep-out zones are painted as a flat diagonal hatch on the tarmac
   // (no 3D walls). Computed in a fragment shader from WORLD x/z, so — like the SVG
   // <pattern patternUnits="userSpaceOnUse"> in the original PoC — it's ONE continuous
@@ -315,7 +339,7 @@ export function createScene(canvas, G) {
     // --- bay glow: colour (OKLab-interpolated yellow->green) is computed in the loop ---
     if (bay && view.bayColor) {
       bay.fillMat.uniforms.uColor.value.set(view.bayColor);
-      bay.border.material.color.set(view.bayEdge || view.bayColor).lerp(WHITE, 0.45).multiplyScalar(3.8);  // hot-white core; bloom carries the yellow/green glow
+      bay.border.material.color.set(view.bayEdge || view.bayColor).lerp(WHITE, 0.28).multiplyScalar(3.6);  // warm-hot core (less white) so the dashes keep their amber; bloom carries the glow
     }
 
     // --- trails ---
@@ -381,10 +405,10 @@ export function createScene(canvas, G) {
 // builders
 // =========================================================================
 function mat(color, o = {}) {
-  return new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: o.r ?? 0.55, metalness: o.m ?? 0.0, flatShading: o.flat ?? true, ...(o.extra || {}) });
+  return withPenumbra(new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: o.r ?? 0.55, metalness: o.m ?? 0.0, flatShading: o.flat ?? true, ...(o.extra || {}) }));
 }
 function emat(color, intensity = 0.9) {
-  return new THREE.MeshStandardMaterial({ color: new THREE.Color(color), emissive: new THREE.Color(color), emissiveIntensity: intensity, roughness: 0.4, metalness: 0 });
+  return withPenumbra(new THREE.MeshStandardMaterial({ color: new THREE.Color(color), emissive: new THREE.Color(color), emissiveIntensity: intensity, roughness: 0.4, metalness: 0 }));
 }
 // box whose BOTTOM rests at y (so cargo sits on the deck)
 function boxMesh(material, sx, sy, sz, x, y, z, rotY = 0) {
@@ -561,9 +585,11 @@ function buildBay(b, dims, parent) {
   const fillMat = new THREE.ShaderMaterial({
     transparent: true, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
-    uniforms: { uColor: { value: new THREE.Color('#ffe84d') } },
+    uniforms: { uColor: { value: new THREE.Color('#ffc233') } },
     vertexShader: `void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-    fragmentShader: `uniform vec3 uColor; void main(){ gl_FragColor = vec4(uColor * 5.5, 0.22); }`,
+    // less blow-out (4.0 not 5.5) + a bit more opacity so the amber hue reads in the body
+    // instead of clipping to cream; still > bloom threshold so it glows.
+    fragmentShader: `uniform vec3 uColor; void main(){ gl_FragColor = vec4(uColor * 4.0, 0.30); }`,
   });
   const fillGeo = new THREE.ShapeGeometry(new THREE.Shape(sp.map(p => new THREE.Vector2(p[0], p[1]))));
   fillGeo.rotateX(-Math.PI / 2);
@@ -584,8 +610,10 @@ function buildBay(b, dims, parent) {
     for (let j = 1; j <= subs; j++) {
       const cur = at(ds + dashLen * j / subs);
       const dx = cur[0]-prev[0], dz = cur[1]-prev[1], len = Math.hypot(dx, dz) || 1e-6;
+      // (nx,nz) is the OUTWARD normal. Pull the whole ribbon inward by its width so its
+      // outer edge sits flush on the outline (= the fill edge) instead of straddling it.
       const nx = -dz/len*hwid, nz = dx/len*hwid;
-      pos.push(prev[0]+nx,0,prev[1]+nz, cur[0]+nx,0,cur[1]+nz, cur[0]-nx,0,cur[1]-nz, prev[0]-nx,0,prev[1]-nz);
+      pos.push(prev[0],0,prev[1], cur[0],0,cur[1], cur[0]-2*nx,0,cur[1]-2*nz, prev[0]-2*nx,0,prev[1]-2*nz);
       idx.push(vi,vi+1,vi+2, vi,vi+2,vi+3); vi += 4;
       prev = cur;
     }
