@@ -169,11 +169,17 @@
   /* big transparent steering touch zone — fills the bottom-left; only X matters */
   .touchSteer{position:absolute;left:0;right:88px;bottom:0;
               height:clamp(150px,34vh,300px);z-index:6;touch-action:none}
-  /* vertical acc/rev slider on the right */
-  .touchThrottle{position:absolute;right:14px;bottom:16px;width:72px;
-                 height:clamp(150px,32vh,280px);z-index:7;touch-action:none;overflow:hidden;
+  /* vertical acc/rev slider on the right, with a brake button stacked beneath it */
+  .touchThrottle{position:absolute;right:14px;bottom:90px;width:72px;
+                 height:clamp(130px,30vh,240px);z-index:7;touch-action:none;overflow:hidden;
                  border:1px solid var(--line);border-radius:30px;corner-shape:superellipse(3);
                  background:var(--asphalt-2)}
+  .touchBrake{position:absolute;right:14px;bottom:16px;width:72px;height:66px;z-index:7;touch-action:none;
+              display:none;align-items:center;justify-content:center;
+              border:1px solid var(--line);border-radius:24px;corner-shape:superellipse(3);
+              background:var(--asphalt-2);font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--ink-dim)}
+  body.touch .touchBrake{display:flex}
+  .touchBrake.pressed{background:var(--warn);border-color:var(--warn);color:#2a0e0c}
   .touchThrottle .tt-fill{position:absolute;left:2px;right:2px;top:50%;height:0;z-index:1;
                  background:var(--good);border-radius:24px;corner-shape:superellipse(3)}
   .touchThrottle .tt-center{position:absolute;left:8px;right:8px;top:50%;height:2px;z-index:2;
@@ -229,6 +235,7 @@
       <div class="tt-lab tt-up">ACC</div>
       <div class="tt-lab tt-dn">REV</div>
     </div>
+    <div class="touchBrake" id="touchBrake">BRAKE</div>
 
     <div class="status" id="status">READY</div>
 
@@ -301,7 +308,8 @@
       </p>
       <p class="note touchonly" style="margin-top:9px">
         <b>On a phone:</b> drag along the bar at the bottom to steer — the wheel holds where you leave it.
-        The slider on the right is throttle: push up to accelerate, down to reverse, release to coast.
+        The slider on the right is throttle: push up to accelerate, down to reverse, release to coast;
+        the <b>BRAKE</b> button below it stops you while held.
       </p>
     </div>
 
