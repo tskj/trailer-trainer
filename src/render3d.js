@@ -93,6 +93,11 @@ export function createScene(canvas, G) {
   const fovWide = 2 * Math.atan(Math.tan(DISPLAY_FOV * Math.PI / 360) * OVERSCAN) * 180 / Math.PI;
   const camera = new THREE.PerspectiveCamera(fovWide, 1, 1, 12000);
 
+  // aspect-driven camera dolly: on narrow/portrait screens the camera pulls back so the
+  // rig stays framed like it is on desktop instead of collapsing to a tall, cramped strip.
+  // 1 on landscape (desktop unchanged); grows gently as the screen gets taller than wide.
+  let viewScale = 1;
+
   // ---- HDR target (supersampled), bloom buffers, hand-written grade pass ----
   let rt = makeTarget(1, 1);                          // scene, rendered SS x larger
   let brightRT = makeTarget(1, 1, { depth: false });  // bloom: extracted highlights
@@ -234,6 +239,9 @@ export function createScene(canvas, G) {
     const w = canvas.clientWidth || canvas.width, h = canvas.clientHeight || canvas.height;
     renderer.setSize(w, h, false);
     camera.aspect = w / h; camera.updateProjectionMatrix();
+    // landscape (w>=h): no change. portrait: dolly out by (h/w)^0.4, capped, for a balanced
+    // framing — gives back horizontal context without shrinking the rig to a dot.
+    viewScale = w >= h ? 1 : clamp(Math.pow(h / w, 0.4), 1, 1.5);
     const pr = renderer.getPixelRatio();
     const W = Math.max(1, Math.floor(w * pr * SS)), H = Math.max(1, Math.floor(h * pr * SS));
     rt.setSize(W, H);
@@ -318,13 +326,14 @@ export function createScene(canvas, G) {
     if (view.rotateFollow) {
       const thS = -Math.PI / 2 - view.camRot;        // recover smoothed heading from camRot
       const fx = Math.cos(thS), fz = Math.sin(thS);
-      camera.position.set(view.camX - fx * 120, 440, view.camY - fz * 120);   // higher + closer = steeper look-down
+      // scaling back-offset + height together preserves the look-down pitch; it just dollies out
+      camera.position.set(view.camX - fx * 120 * viewScale, 440 * viewScale, view.camY - fz * 120 * viewScale);
       camera.up.set(0, 1, 0);
       // driving forward (look 0..1) pushes the aim ahead + raises it -> camera tilts up toward where you're going
       const look = view.camLook || 0;
       camera.lookAt(view.camX + fx * (8 + 200 * look), 4 + 105 * look, view.camY + fz * (8 + 200 * look));
     } else {
-      camera.position.set(view.camX, 620, view.camY + 0.001);
+      camera.position.set(view.camX, 620 * viewScale, view.camY + 0.001);
       camera.up.set(0, 0, -1);
       camera.lookAt(view.camX, 0, view.camY);
     }

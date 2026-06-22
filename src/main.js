@@ -350,7 +350,7 @@ import { createScene } from './render3d.js';
   // mouse steering: relative (movementX) when the pointer is captured, absolute X otherwise.
   const stageEl = document.querySelector(".stage");
   stageEl.addEventListener("mousemove", e=>{
-    if(!st) return;
+    if(!st || document.body.classList.contains("touch")) return;   // touch UI owns steering on phones
     mouseSteer = true;                          // mouse now owns the wheel; suppress keyboard centre-snap
     const r = stageEl.getBoundingClientRect();
     if(locked){
@@ -364,6 +364,7 @@ import { createScene } from './render3d.js';
   });
   stageEl.addEventListener("click", e=>{
     if(e.target.id!=="gl") return;                       // only capture on the canvas, not overlay buttons
+    if(document.body.classList.contains("touch")) return; // no pointer-lock on touch devices
     ensureEngine();
     if(document.pointerLockElement!==stageEl && stageEl.requestPointerLock){
       try{ stageEl.requestPointerLock(); }catch(_){}
@@ -374,6 +375,39 @@ import { createScene } from './render3d.js';
     const h=$("lockHint");
     if(h) h.textContent = locked ? "mouse captured · Esc to release" : "click the view to capture the mouse";
   });
+
+  // ---- touch controls (phone): a steering bar/zone along the bottom-left, and a
+  //      vertical acc/rev slider on the right. Two thumbs work independently. ----
+  let touchThr = 0;                                  // -1 (full reverse) .. +1 (full forward)
+  function enableTouchUI(){ document.body.classList.add("touch"); }
+  if(window.matchMedia && matchMedia("(pointer: coarse)").matches) enableTouchUI();   // phones/tablets
+  addEventListener("touchstart", ()=>{ enableTouchUI(); ensureEngine(); }, {passive:true});
+
+  const steerZone=$("touchSteer"), thrZone=$("touchThrottle");
+  function steerFromTouch(t){
+    if(!st) return;
+    const r=steerZone.getBoundingClientRect();
+    const frac=clamp((t.clientX-r.left)/r.width*2-1,-1,1);
+    const m=Math.pow(Math.abs(frac),1.4);            // ease the centre, no deadband — matches the mouse bar
+    st.delta=Math.sign(frac)*m*MAX_STEER;
+    mouseSteer=true;                                 // touch owns the wheel (suppress keyboard centre-snap)
+  }
+  function thrFromTouch(t){
+    const r=thrZone.getBoundingClientRect();
+    const f=clamp((r.top+r.height/2-t.clientY)/(r.height/2),-1,1);   // up = forward, down = reverse
+    const dead=0.08;                                 // small neutral band around centre
+    touchThr = Math.abs(f)<dead ? 0 : (f-Math.sign(f)*dead)/(1-dead);
+  }
+  function bindZone(el,onMove,onEnd){
+    const move=e=>{ if(e.targetTouches.length) onMove(e.targetTouches[0]); e.preventDefault(); };
+    const end =e=>{ if(e.targetTouches.length===0 && onEnd) onEnd(); e.preventDefault(); };
+    el.addEventListener("touchstart",e=>{ enableTouchUI(); ensureEngine(); if(e.targetTouches.length) onMove(e.targetTouches[0]); e.preventDefault(); },{passive:false});
+    el.addEventListener("touchmove",move,{passive:false});
+    el.addEventListener("touchend",end,{passive:false});
+    el.addEventListener("touchcancel",end,{passive:false});
+  }
+  bindZone(steerZone, steerFromTouch, null);                  // steering set-and-holds (like the mouse bar)
+  bindZone(thrZone,   thrFromTouch,  ()=>{ touchThr=0; });    // release the throttle -> neutral (coast)
 
   function bayDims(b){ const d=BAY[b.fit]; return {hl:b.hl||d.hl, hw:b.hw||d.hw}; }
 
@@ -501,8 +535,11 @@ import { createScene } from './render3d.js';
   function step(dt){
     if(dead){ deadT+=dt; if(deadT>=deadDur) respawn(); return; }
 
-    // longitudinal + lateral dynamics are integrated in the substep loop below
-    const throttle = isFwd()?1:0, reverse = isRev()?1:0, braking = isBrake()?1:0;
+    // longitudinal + lateral dynamics are integrated in the substep loop below.
+    // throttle/reverse come from the keyboard booleans OR the analog touch slider (touchThr).
+    const throttle = clamp((isFwd()?1:0) + Math.max(0, touchThr), 0, 1);
+    const reverse  = clamp((isRev()?1:0) + Math.max(0,-touchThr), 0, 1);
+    const braking  = isBrake()?1:0;
     const v0 = st.v, om0 = st.omega, omT0 = st.omegaT;   // pre-step velocities -> body-attitude accel
 
     // steering. The mouse owns the wheel and HOLDS any angle (set-and-hold).
@@ -730,11 +767,21 @@ import { createScene } from './render3d.js';
       const a=R.aim(level.bay.x, level.bay.y);
       if(a.onscreen) ga.style.display="none";
       else {
-        const cw=glCanvas.clientWidth, ch=glCanvas.clientHeight, m=26;
+        const cw=glCanvas.clientWidth, ch=glCanvas.clientHeight;
         let dx=a.dirx, dy=a.diry;
         if(Math.abs(dx)<1e-6 && Math.abs(dy)<1e-6) dy=1;     // degenerate (dead behind) -> point down
-        const sc=Math.min((cw/2-m)/Math.abs(dx||1e-6), (ch/2-m)/Math.abs(dy||1e-6));
-        ga.style.transform=`translate(${cw/2+dx*sc-17}px,${ch/2+dy*sc-17}px) rotate(${Math.atan2(dy,dx)}rad)`;
+        // clamp the arrow to a rectangle inset from the HUD chrome (steer bar / touch
+        // controls / status pill) so it sits well inside the view instead of hiding behind it.
+        const touch=document.body.classList.contains("touch");
+        const insT = touch ? 58 : 82;                        // top: status (mobile) / steer bar (desktop)
+        const insL = 46, insR = 46;
+        let insB = 56;                                       // bottom: status + lock hint (desktop)
+        if(touch){ const ts=$("touchSteer"); insB = (ts?ts.getBoundingClientRect().height:170) + 22; }   // clear the touch controls
+        const left=insL, right=Math.max(insL+80, cw-insR);
+        const top=insT, bottom=Math.max(insT+80, ch-insB);
+        const cxp=(left+right)/2, cyp=(top+bottom)/2, hxp=(right-left)/2, hyp=(bottom-top)/2;
+        const sc=Math.min(hxp/Math.abs(dx||1e-6), hyp/Math.abs(dy||1e-6));
+        ga.style.transform=`translate(${cxp+dx*sc-17}px,${cyp+dy*sc-17}px) rotate(${Math.atan2(dy,dx)}rad)`;
         ga.style.display="";
       }
     } else ga.style.display="none";
@@ -779,13 +826,18 @@ import { createScene } from './render3d.js';
 
     // throttle gauge: inertial low-pass of the input (slow rise, slower decay) so tapping
     // accumulates and coasts down instead of snapping — the bar carries momentum like the rig does
-    const tgt=(isFwd()?1:0)-(isRev()?1:0);
+    const tgt=clamp((isFwd()?1:0)-(isRev()?1:0)+touchThr,-1,1);
     const rate = (Math.abs(tgt) > Math.abs(thrDisp) || (tgt!==0 && Math.sign(tgt)!==Math.sign(thrDisp))) ? 0.05 : 0.022;
     thrDisp += (tgt-thrDisp)*rate;
     if(Math.abs(thrDisp)<0.002) thrDisp=0;
     const tf=$("thrFill");
     if(thrDisp>=0){ tf.style.top=(50-50*thrDisp)+"%"; tf.style.height=(50*thrDisp)+"%"; tf.style.background="var(--good)"; }
     else { tf.style.top="50%"; tf.style.height=(50*-thrDisp)+"%"; tf.style.background="var(--warn)"; }
+    // mirror onto the on-screen touch slider: fill = engine response, thumb = finger position
+    const ttf=$("ttFill"), ttt=$("ttThumb");
+    if(thrDisp>=0){ ttf.style.top=(50-50*thrDisp)+"%"; ttf.style.height=(50*thrDisp)+"%"; ttf.style.background="var(--good)"; }
+    else { ttf.style.top="50%"; ttf.style.height=(50*-thrDisp)+"%"; ttf.style.background="var(--warn)"; }
+    ttt.style.top=(50-44*touchThr)+"%";
 
     updateEngine(st.v, thrDisp);
     updateRunLine();
