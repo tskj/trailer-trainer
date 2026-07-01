@@ -33,21 +33,25 @@ import { createScene } from './render3d.js';
   // speed-sensitive steering: full authority at parking speeds, eased down toward STEER_LO
   // as speed builds, so the front bites less and pushes wide (understeer) instead of darting.
   const STEER_REF=230, STEER_LO=0.22;               // half-falloff speed, high-speed authority floor (lower = more understeer)
-  // trailer sway / snaking: no-slip roll at low speed / any reverse, but above TR_SLIDE_LO
-  // (forward only) the trailer is a free body with real yaw INERTIA (TR_IZ) — so once it swings,
-  // its momentum overshoots the centre line and carries out the other side. The wheel is a real
-  // tyre whose grip PEAKS then FALLS past breakaway (~1/TR_KSTIFF), and crucially its force LAGS
-  // the slip by a relaxation length (TR_RELAX): that phase lag pumps energy into the swing, so a
-  // little wag builds up (more and more) into a full pendulum fishtail rather than settling back
-  // into line. Slow down to kill it; let it run and the jackknife angle catches it. Gated so slow
-  // speed + all reverse stay pure no-slip (verified: zero slip, unchanged jackknife).
-  const TR_SLIDE_LO=100, TR_SLIDE_HI=240;           // forward-speed range over which sway fades in
-  const TR_GRIP=70, TR_KSTIFF=6, TR_IZ=1000;        // peak grip, slip stiffness (breakaway ~1/6 rad), yaw inertia (momentum)
-  const TR_RELAX=130;                                // tyre relaxation length — the lag that drives the growing sway (lower = builds faster/more violent)
-  // and the sway feeds BACK into the car: the trailer's lateral tyre force pulls the hitch, which
-  // (being behind the rear axle) yaws the car and can break its own rear loose at speed. Zero
-  // whenever the sway is gated off (TR tyre force is 0), so low speed + reverse are untouched.
-  const TR_COUPLE=1.0;                               // how hard the swaying trailer yanks the car (higher = throws the car more easily)
+  // trailer drift (forward, above TR_SLIDE_LO): the trailer becomes a real swinging MASS
+  // on the hitch pin. Its rotation about the hitch is a DRIVEN PENDULUM — yank the pivot
+  // sideways (a steering flick) and the load slings out; a SATURATING tyre at the axle
+  // pulls it back toward rolling true (the force plateaus rather than collapsing past
+  // breakaway, so a swing is catchable with countersteer instead of self-amplifying).
+  // The full pin constraint force — tyre force plus the inertial reaction of the swinging
+  // mass — is applied back onto the car at the hitch, so a thrown trailer genuinely
+  // THROWS the car: every whip trades forward speed for rotation. Gated to zero at low
+  // speed and in all reverse, so parking and backing are untouched.
+  const TR_SLIDE_LO=100, TR_SLIDE_HI=240;           // forward-speed range over which drift physics fade in
+  const TR_KSTIFF=6;                                 // tyre slip stiffness (saturates ~1/6 rad)
+  const TR_MASS=0.9, TR_COG=draw_d;                  // trailer mass (car=1) with its CoG at the axle (under the pile)
+  const TR_IZ=1000, TR_IZD=TR_IZ+TR_MASS*TR_COG*TR_COG;  // yaw inertia about CoG / about the hitch pin
+  const TR_GRIP_D=230, TR_RELAX_D=60;                // tyre grip (saturating), short relaxation lag (weight, not self-pumping)
+  const SWAY_DAMP=0.45;                              // tyre-scrub damping on the swing (1/s) — rounds a max flick off below the jackknife edge
+  const PIN_CAP=600;                                 // safety cap on the hitch constraint force
+  // handbrake (Shift): cuts rear grip + drags the rear — the drift initiator. Gated on
+  // forward speed so parking / reversing never feel it.
+  const HB_GRIP=0.9, HB_BRAKE=70;
   // ---- trailer: KINEMATIC no-slip rolling constraint (see step()). No tyre/grip
   //      constants — the wheel can't slip sideways, so it tracks cleanly at any speed
   //      and reverse folds toward a jackknife (JACK_TRIGGER) if you don't correct. ----
@@ -428,7 +432,8 @@ import { createScene } from './render3d.js';
   const isLeft=()=>keys.has("ArrowLeft")||keys.has("s")||keys.has("j");
   const isRight=()=>keys.has("ArrowRight")||keys.has("f")||keys.has("l");
   const isBrake=()=>keys.has("Control");                         // Ctrl = brakes
-  const MOVE=["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","e","s","d","f","i","j","k","l","Control"];
+  const isHand =()=>keys.has("Shift");                           // Shift = handbrake (drift initiator)
+  const MOVE=["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","e","s","d","f","i","j","k","l","Control","Shift"];
   addEventListener("keydown", e=>{
     if(naming) return;
     const k = e.key.length===1 ? e.key.toLowerCase() : e.key;
@@ -521,6 +526,7 @@ import { createScene } from './render3d.js';
     // full state restore: pose, steering, velocity AND camera all captured from the buffered moment
     st.x=s.x; st.y=s.y; st.theta=s.theta; st.phi=s.phi; st.delta=s.delta;
     st.v=s.v; st.vlat=s.vlat; st.omega=s.om; st.omegaT=s.omT;
+    st.FyT=0; st._hFx=0; st._hFy=0; st._pVhx=st._pVhy=null;   // drop coupling state — the finite-diff pivot accel must not see the teleport
     cam={x:s.camx, y:s.camy}; camRot=s.camrot; camSnap=true;   // restore + insta-snap the camera (no animation)
     trails.front.length=Math.min(trails.front.length,s.tf);
     trails.rear.length =Math.min(trails.rear.length, s.tr);
@@ -531,6 +537,7 @@ import { createScene } from './render3d.js';
     levelIdx=i; level=LEVELS[i];
     const s=level.start;
     st={x:s.x,y:s.y,theta:s.th,phi:s.th,delta:0,v:0,vlat:0,omega:0,omegaT:0,FyT:0,
+        _hFx:0,_hFy:0,_pVhx:null,_pVhy:null,
         pitch:0,pitchV:0,roll:0,rollV:0,trRoll:0,trRollV:0};
     const pb = level.perturb ?? PERTURB;
     if(pb>0){ const sgn=Math.random()<0.5?-1:1; st.phi = s.th + sgn*(pb + Math.random()*PERTURB_RAND); }
@@ -641,6 +648,7 @@ import { createScene } from './render3d.js';
     const throttle = clamp((isFwd()?1:0) + Math.max(0, touchThr), 0, 1);
     const reverse  = clamp((isRev()?1:0) + Math.max(0,-touchThr), 0, 1);
     const braking  = (isBrake()||touchBrake)?1:0;
+    const hb       = isHand()?1:0;
     const v0 = st.v, om0 = st.omega, omT0 = st.omegaT;   // pre-step velocities -> body-attitude accel
 
     // steering. The mouse owns the wheel and HOLDS any angle (set-and-hold).
@@ -671,16 +679,22 @@ import { createScene } from './render3d.js';
       const cogvx0=u*cth - w*sth, cogvy0=u*sth + w*cth;      // COG world velocity (start)
       const Vhx = cogvx0 + om*d*sth, Vhy = cogvy0 - om*d*cth; // hitch world velocity
       const omegaTkin = (Vhy*cph - Vhx*sph)/draw_d;          // lateral hitch vel / draw_d -> trailer yaw rate
-      // trailer -> car feedback: the trailer's lateral tyre force (st.FyT, last substep) pulls the
-      // hitch; in the car body frame that's a lateral+long force at the rear, plus a yaw torque
-      // (lever d). It's 0 unless the sway is active, so low speed / reverse feel nothing.
+      // trailer -> car feedback: the full hitch PIN reaction (st._hFx/_hFy, trailer frame,
+      // one substep old) — tyre force PLUS the inertial reaction of the swinging trailer
+      // mass. Rotated into the car frame, applied at the hitch: force + yaw torque (lever
+      // d). Zero whenever the drift gate is closed, so low speed / reverse feel nothing.
       const cArt = cth*cph + sth*sph, sArt = sth*cph - cth*sph;   // cos/sin(theta - phi)
-      const yankBY = TR_COUPLE*st.FyT*cArt, yankBX = TR_COUPLE*st.FyT*sArt, yankTau = -d*yankBY;
+      const yankBX =  cArt*st._hFx + sArt*st._hFy;
+      const yankBY = -sArt*st._hFx + cArt*st._hFy;
+      const yankTau = -d*yankBY;
 
       // --- car longitudinal + lateral tyres ---
       let Fx = throttle*DRIVE - reverse*REV;
       Fx -= braking*BRAKE*Math.tanh(u*0.4);                 // brake opposes forward motion
       Fx -= DRAG_L*u + ROLL_L*Math.tanh(u*3);               // viscous + coulomb resistance
+      // handbrake: fades in above parking speeds, drags the rear + guts rear grip below
+      const hbG = hb*clamp((u - 60)/90, 0, 1);
+      Fx -= hbG*HB_BRAKE*Math.tanh(u*0.4);
       const sp = Math.hypot(u,w), den = Math.max(sp,3), su = u>=0?1:-1;
       const latFade = Math.min(1, sp/1.2);                  // grip engages just off standstill -> crisp low-speed tracking (only true crawl fades, to avoid jitter)
       // speed-sensitive steering: ~full angle while parking, eased toward STEER_LO at speed.
@@ -690,13 +704,13 @@ import { createScene } from './render3d.js';
       const ar = Math.atan2(w - LR*om, den);
       const tract = throttle*DRIVE + braking*BRAKE + reverse*REV;
       const gl = Math.min(1, tract*REAR_LONG/GRIP_R);       // RWD friction circle: drive/brake eats rear grip
-      const grR = GRIP_R*Math.sqrt(Math.max(0.15, 1 - gl*gl));
+      const grR = GRIP_R*Math.sqrt(Math.max(0.15, 1 - gl*gl))*(1 - HB_GRIP*hbG);
       const Fyf = -GRIP_F*latFade*Math.tanh(KSTIFF*af);
       const Fyr = -grR   *latFade*Math.tanh(KSTIFF*ar);
 
       const ax = Fx - Fyf*Math.sin(dEff) + w*om + yankBX;
       const ay = Fyf*Math.cos(dEff) + Fyr - u*om + yankBY;
-      const omdot = (LF*Fyf*Math.cos(dEff) - LR*Fyr + yankTau)/IZ - YAW_DAMP*om;
+      const omdot = (LF*Fyf*Math.cos(dEff) - LR*Fyr + yankTau)/IZ - YAW_DAMP*(1 - 0.6*hbG)*om;   // handbrake frees the car to rotate
       u = clamp(u + ax*h, -MAX_SPEED, MAX_SPEED);
       w += ay*h; om += omdot*h;
 
@@ -707,22 +721,40 @@ import { createScene } from './render3d.js';
       st.v=u; st.vlat=w; st.omega=om;
       st.x = cogx - LR*c2; st.y = cogy - LR*s2;             // back to rear-axle reference
 
-      // --- integrate the trailer: instant no-slip roll, fading into a free swaying body at speed ---
-      // slideGate is 0 in reverse and at low forward speed -> omegaT === omegaTkin (pure kinematic,
-      // unchanged). At high forward speed the trailer is a free body: a peak-and-drop tyre force acts
-      // through its yaw inertia (so it has momentum and overshoots), and TR_PUMP feeds energy into the
-      // deviation so the swing builds instead of settling -> a growing fishtail until it jackknifes.
+      // --- integrate the trailer: no-slip roll at low speed / any reverse (slideGate 0 ->
+      // omegaT === omegaTkin, byte-identical to before). At forward speed it becomes a
+      // swinging MASS: rotation about the hitch is a DRIVEN PENDULUM — the pivot's lateral
+      // acceleration (finite-differenced hitch velocity) slings the trailer out (the
+      // flick), while a SATURATING tyre at the axle (plateaus past ~1/TR_KSTIFF rad,
+      // never collapses) pulls it back toward rolling true, so swings are catchable.
+      // The full pin reaction (tyre + swinging-mass inertia) is stored in trailer-frame
+      // components for the car to feel next substep. ---
       let omegaT = omegaTkin, slipAng = 0;
       const sg = clamp((u - TR_SLIDE_LO)/(TR_SLIDE_HI - TR_SLIDE_LO), 0, 1), slideGate = sg*sg*(3-2*sg);
       if(slideGate > 0){
         const Vt = Math.max(Math.hypot(Vhx, Vhy), 1);
-        slipAng = (omegaTkin - st.omegaT)*draw_d/Vt;           // wheel slip angle (uses the trailer's own yaw rate)
+        slipAng = (omegaTkin - st.omegaT)*draw_d/Vt;           // axle slip angle (from the trailer's own yaw rate)
         const x = TR_KSTIFF*slipAng;
-        const FyTarget = 2*TR_GRIP * x/(1 + x*x);              // peak-and-drop tyre: restoring, but FALLS past breakaway
-        st.FyT += (FyTarget - st.FyT)*Math.min(1, Vt*h/TR_RELAX);   // relaxation: force lags the slip -> phase lag that grows the sway
-        const omegaDyn = clamp(st.omegaT + (draw_d*st.FyT/TR_IZ)*h, -8, 8);  // torque about the hitch / yaw inertia
-        omegaT = omegaTkin + slideGate*(omegaDyn - omegaTkin);
-      } else st.FyT = 0;
+        const FyTarget = TR_GRIP_D * x/Math.sqrt(1 + x*x);     // saturating tyre force
+        st.FyT += (FyTarget - st.FyT)*Math.min(1, Vt*h/TR_RELAX_D);
+        // pivot (hitch) acceleration on trailer axes; _pVh nulled across teleports
+        const ok = st._pVhx !== null;
+        const aHx = ok ? clamp((Vhx - st._pVhx)/h, -4000, 4000) : 0;
+        const aHy = ok ? clamp((Vhy - st._pVhy)/h, -4000, 4000) : 0;
+        const aHt = aHx*cph + aHy*sph, aHl = -aHx*sph + aHy*cph;
+        // pendulum about the pin: pivot yank slings the load out; tyre torque restores;
+        // scrub damping bleeds swing energy so a max-effort flick stays this side of the jackknife
+        const omdT = (TR_MASS*TR_COG*aHl + draw_d*st.FyT)/TR_IZD - SWAY_DAMP*(st.omegaT - omegaTkin);
+        const omegaDyn = clamp(st.omegaT + omdT*h, -8, 8);
+        // partial gate bleeds the dynamic state toward kinematic at a RATE that vanishes
+        // at full gate (re-anchoring the state each substep would annihilate any swing)
+        omegaT = omegaTkin + (omegaDyn - omegaTkin)*Math.exp(-(1-slideGate)*25*h);
+        // pin reaction on the car, trailer frame (-st.FyT is the physical tyre force on
+        // the trailer; the rest is the inertial reaction of the swinging mass)
+        st._hFx = clamp(slideGate*(-TR_MASS*(aHt + TR_COG*st.omegaT*st.omegaT)), -PIN_CAP, PIN_CAP);
+        st._hFy = clamp(slideGate*(-st.FyT - TR_MASS*(aHl - TR_COG*omdT)), -PIN_CAP, PIN_CAP);
+      } else { st.FyT = 0; st._hFx = 0; st._hFy = 0; }
+      st._pVhx = Vhx; st._pVhy = Vhy;
       st.omegaT = omegaT;
       st.phi += st.omegaT*h;
       st._aT = Math.abs(slipAng)*slideGate;                    // slip angle -> trailer skidmarks once it breaks loose
