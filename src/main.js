@@ -316,12 +316,13 @@ import { createScene } from './render3d.js';
       return true;
     }
   });`;
-  let engine=null, engineBooting=false;
+  let engine=null, engineBooting=false, skid=null;
   function ensureEngine(){
     if(engine||engineBooting) return;
     try{
       actx = actx || new (window.AudioContext||window.webkitAudioContext)();
       if(actx.state==="suspended") actx.resume();
+      if(!skid) skid=buildSkid();
       if(actx.audioWorklet && window.AudioWorkletNode){
         engineBooting=true;
         const url=URL.createObjectURL(new Blob([V8_SRC],{type:"application/javascript"}));
@@ -389,6 +390,35 @@ import { createScene } from './render3d.js';
     engine.nf.frequency.setTargetAtTime(85 + sp*0.5, t, 0.06);
     engine.ng.gain.setTargetAtTime(0.28*(0.5+0.5*load), t, 0.08);         // a touch more low combustion rumble
     engine.master.gain.setTargetAtTime(0.11*(0.45+0.55*rev+0.4*load), t, 0.08);
+  }
+
+  // ---- tire skid: noise through two resonant bandpasses (the tonal squeal, pitch
+  //      wobbled by an LFO so it never whistles steadily) plus a broadband scrub bed.
+  //      Squeal frequency chirps DOWN as the car slows — the classic brake-stop arc. ----
+  function buildSkid(){
+    try{
+      const buf=actx.createBuffer(1, actx.sampleRate*2, actx.sampleRate), d=buf.getChannelData(0);
+      for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+      const src=actx.createBufferSource(); src.buffer=buf; src.loop=true;
+      const master=actx.createGain(); master.gain.value=0; master.connect(actx.destination);
+      const mk=(type,f,q,g)=>{ const b=actx.createBiquadFilter(); b.type=type; b.frequency.value=f; b.Q.value=q;
+        const gn=actx.createGain(); gn.gain.value=g; src.connect(b); b.connect(gn); gn.connect(master); return b; };
+      const bp1=mk("bandpass", 1100, 9, 3.0);    // squeal fundamental
+      const bp2=mk("bandpass", 1600, 11, 2.0);   // squeal overtone
+      mk("bandpass", 420, 0.8, 1.1);             // rubber-scrub roar under it
+      const lfo=actx.createOscillator(); lfo.type="sine"; lfo.frequency.value=6.5;
+      const lg=actx.createGain(); lg.gain.value=70; lfo.connect(lg); lg.connect(bp1.frequency); lg.connect(bp2.frequency);
+      src.start(); lfo.start();
+      return {master,bp1,bp2};
+    }catch(e){ return null; }
+  }
+  function updateSkid(lvl, sp){
+    if(!skid||!actx) return;
+    const t=actx.currentTime;
+    const f=800 + Math.min(700, sp*2.2);                       // squeal pitch rides speed -> chirps down while stopping
+    skid.bp1.frequency.setTargetAtTime(f, t, 0.06);
+    skid.bp2.frequency.setTargetAtTime(f*1.45, t, 0.06);
+    skid.master.gain.setTargetAtTime(lvl>0.02 ? 0.3*lvl : 0, t, lvl>0.02 ? 0.03 : 0.09);   // snap on, trail off
   }
 
   // ---- input ----
@@ -912,6 +942,14 @@ import { createScene } from './render3d.js';
     ttt.style.top=(50-44*touchThr)+"%";
 
     updateEngine(st.v, thrDisp);
+    // skid audio intensity: stomped brakes at speed are the headliner; lateral rear
+    // slip, raw drift and trailer fishtail all scrub too. Take the loudest cause.
+    const spd=Math.abs(st.v);
+    const brkSk = (isBrake()||touchBrake) && spd>25 ? 0.4+Math.min(0.6, spd/300) : 0;
+    const latSk = fastSkid && st._ar>0.25 ? Math.min(1, (st._ar-0.25)*2.5) : 0;
+    const drfSk = fastSkid && Math.abs(st.vlat)>10 ? Math.min(0.6, (Math.abs(st.vlat)-10)/60) : 0;
+    const trlSk = fastSkid && st._aT>0.15 ? Math.min(0.8, st._aT*1.4) : 0;
+    updateSkid(dead ? 0 : Math.max(brkSk, latSk, drfSk, trlSk), spd);
     updateRunLine();
   }
   const fmtDist=d=>Math.round(d).toString();
@@ -1040,5 +1078,5 @@ import { createScene } from './render3d.js';
   window.__tt = () => ({ v:st.v, vlat:st.vlat, om:st.omega, omT:st.omegaT, delta:st.delta, artic:norm(st.theta-st.phi)*57.3, ar:st._ar, gl:st._gl, aT:st._aT, skids:R.skidCountDbg?R.skidCountDbg():-1,
     pitch:st.pitch*57.3, roll:st.roll*57.3, trRoll:st.trRoll*57.3 });
   window.__hitch = () => R.hitchDbg();   // coupling check: car-hitch vs trailer-tongue world gap
-  window.__audio = () => ({ actx, engine });   // engine-sound probe (test scripts attach an analyser)
+  window.__audio = () => ({ actx, engine, skid });   // sound probe (test scripts attach an analyser)
 })();
