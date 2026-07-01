@@ -35,11 +35,16 @@ const COL = {
   trailerBed: '#a8845a',  // wood deck
   trailerRail:'#566070',  // steel rails
   tongue:     '#5b6472',
-  strap:      '#383d49',  // tie-down straps
+  strap:      '#ff7a1a',  // bright orange ratchet straps cinching the load
   crateA:     '#e8a13b',  // amber crate
   crateB:     '#4ec5b3',  // teal crate
   barrel:     '#3f7fc9',  // blue barrel
-  plank:      '#8a6240',  // brown plank
+  plank:      '#8a6240',  // brown plank / wood crate
+  washer:     '#efe9dc',  // white-goods box (washing machine)
+  suitcase:   '#8b6444',  // leather suitcase
+  rug:        '#a94f5e',  // rolled-up rug
+  pot:        '#b56a42',  // terracotta plant pot
+  plant:      '#43a35f',  // the plant
   wheel:      '#23233b',
   hub:        '#cfd4e6',
   cone:      '#ff8c1a',
@@ -324,17 +329,18 @@ export function createScene(canvas, G) {
     trailer.tilt.rotation.set(pose.trRoll || 0, 0, trPitch);
 
     // --- camera ---
+    const vs = viewScale * (window.__camZoom || 1);   // __camZoom: debug dolly for screenshot scripts
     if (view.rotateFollow) {
       const thS = -Math.PI / 2 - view.camRot;        // recover smoothed heading from camRot
       const fx = Math.cos(thS), fz = Math.sin(thS);
       // scaling back-offset + height together preserves the look-down pitch; it just dollies out
-      camera.position.set(view.camX - fx * 120 * viewScale, 440 * viewScale, view.camY - fz * 120 * viewScale);
+      camera.position.set(view.camX - fx * 120 * vs, 440 * vs, view.camY - fz * 120 * vs);
       camera.up.set(0, 1, 0);
       // driving forward (look 0..1) pushes the aim ahead + raises it -> camera tilts up toward where you're going
       const look = view.camLook || 0;
       camera.lookAt(view.camX + fx * (8 + 200 * look), 4 + 105 * look, view.camY + fz * (8 + 200 * look));
     } else {
-      camera.position.set(view.camX, 620 * viewScale, view.camY + 0.001);
+      camera.position.set(view.camX, 620 * vs, view.camY + 0.001);
       camera.up.set(0, 0, -1);
       camera.lookAt(view.camX, 0, view.camY);
     }
@@ -438,10 +444,10 @@ function boxMesh(material, sx, sy, sz, x, y, z, rotY = 0) {
 }
 
 function buildCar(G) {
-  // Low-poly Beetle/Mini bubble-car. The whole shape is rounded — a faceted body
-  // shell (one continuous hood->roof->tail bulge), a dark glassy cabin dome and a
-  // small cream roof cap blended into it, round headlight "eyes", little fender
-  // bulges over fat wheels. No box-with-a-thing-on-top, so no "pill".
+  // Boxy low-poly tow wagon (Crossy-Road / toy-car massing): a long coral body
+  // slab with a flat hood, a dark glass cabin band under a cream wagon roof,
+  // chunky dark fender flares over fat wheels, round headlight "eyes", and a
+  // duffel strapped to the roof with the same orange straps as the trailer load.
   const group = new THREE.Group();
   // sprung mass: everything but the wheels lives in `tilt`, which pitches/rolls about the
   // car's centre (at ~CoG height) while the wheels stay planted on the tarmac. `inner`
@@ -449,13 +455,17 @@ function buildCar(G) {
   const tilt = new THREE.Group(), inner = new THREE.Group();
   tilt.add(inner); group.add(tilt);
   const bodyMat  = mat(COL.carBody, { r: 0.45, m: 0.12 });
+  const trimMat  = mat(COL.carBodyDark, { r: 0.55, m: 0.08 });
   const roofMat  = mat(COL.carRoof, { r: 0.5, m: 0.05 });
   const glassMat = mat(COL.glass, { r: 0.06, m: 0.6 });
   const wheelMat = mat(COL.wheel, { r: 0.78, flat: false });
   const hubMat   = mat(COL.hub, { r: 0.4, m: 0.5, flat: false });
   const chromeMat= mat(COL.chrome, { r: 0.3, m: 0.75 });
+  const grilleMat= mat(COL.grille, { r: 0.65 });
   const headMat  = emat(COL.headlight, 1.2);
   const tailMat  = emat(COL.taillight, 0.95);
+  const strapMat = mat(COL.strap, { r: 0.7 });
+  const duffelMat= mat(COL.crateA, { r: 0.75 });
 
   const len = 2 * G.CAR_HL, wid = G.carW, wheelR = G.wheelL / 2 + 1.5, yb = wheelR;
   const frontX = G.CAR_CTR + G.CAR_HL, rearX = G.CAR_CTR - G.CAR_HL, cx = G.CAR_CTR;
@@ -473,32 +483,34 @@ function buildCar(G) {
   hitchAnchor.position.set(-G.hitchC, couplingY, 0);
   inner.add(hitchAnchor);
 
-  // faceted scaled-sphere helper (rx,ry,rz are radii)
-  const dome = (mtl, rx, ry, rz, x, y, z = 0, wseg = 14, hseg = 10) => {
-    const m = new THREE.Mesh(new THREE.SphereGeometry(1, wseg, hseg), mtl);
-    m.scale.set(rx, ry, rz); m.position.set(x, y, z);
-    m.castShadow = true; m.receiveShadow = true; inner.add(m); return m;
-  };
-
-  // rounded body shell — one continuous bulge spanning the footprint
-  dome(bodyMat, len * 0.52, 12, wid * 0.52, cx, yb + 4.5);
-  // dark window band, then a cream roof dome sitting on top of it (two-tone greenhouse)
-  dome(glassMat, len * 0.31, 7.5, wid * 0.45, cx - len * 0.05, yb + 10);
-  dome(roofMat, len * 0.27, 6.5, wid * 0.40, cx - len * 0.07, yb + 14);
-
-  // round headlight "eyes" + taillights (slightly squashed discs facing out)
-  const lamp = new THREE.SphereGeometry(2.9, 10, 8);
-  for (const z of [-wid * 0.30, wid * 0.30]) {
-    const hl = new THREE.Mesh(lamp, headMat); hl.scale.set(0.6, 1, 1); hl.position.set(frontX - 2.5, yb + 6, z); inner.add(hl);
-    const tl = new THREE.Mesh(lamp, tailMat); tl.scale.set(0.6, 0.9, 1); tl.position.set(rearX + 2.5, yb + 6.5, z); inner.add(tl);
+  // massing: hood (body top) LOW, cream roof HIGH, dark glass band between — three
+  // clear tiers that read from the game's high camera. Body is narrower than the
+  // wheels so the flares + tyres poke out chunky.
+  const bodyTop = yb + 9;                                       // hood height
+  inner.add(boxMesh(bodyMat, len, bodyTop - 7, wid - 4, cx, 7, 0));            // main slab: x rear..front, y 7..hood
+  inner.add(boxMesh(glassMat, 38, 8, wid - 8, 9, bodyTop, 0));                 // cabin glass band (wagon: rear half)
+  inner.add(boxMesh(roofMat, 33, 2.6, wid - 9, 6.5, bodyTop + 8, 0));          // cream roof cap, stops short of the
+  // windscreen so a dark glass strip shows between roof and hood from the game's high camera
+  // dark fender flares over each wheel (poke out past the body sides)
+  for (const wx of [0, G.L]) for (const sz of [-1, 1])
+    inner.add(boxMesh(trimMat, 16, 6, 3.2, wx, yb + 2, sz * (wid / 2 - 1.2)));
+  // face furniture: grille + round headlight eyes + boxy taillights
+  inner.add(boxMesh(grilleMat, 1.6, 4.5, wid * 0.5, frontX - 0.4, yb + 2.5, 0));
+  const lamp = new THREE.SphereGeometry(2.7, 10, 8);
+  for (const z of [-wid * 0.32, wid * 0.32]) {
+    const hl = new THREE.Mesh(lamp, headMat); hl.scale.set(0.55, 1, 1); hl.position.set(frontX - 0.5, yb + 6.5, z); inner.add(hl);
+    const tl = new THREE.Mesh(new THREE.BoxGeometry(1.8, 3.2, 4.6), tailMat); tl.position.set(rearX + 0.8, yb + 6, z); inner.add(tl);
   }
   // chrome bumpers
-  const fB = new THREE.Mesh(new THREE.BoxGeometry(3.5, 4.5, wid * 0.86), chromeMat);
-  fB.position.set(frontX - 2, yb + 2.6, 0); fB.castShadow = true; inner.add(fB);
-  const rB = new THREE.Mesh(new THREE.BoxGeometry(3.5, 4.5, wid * 0.86), chromeMat);
-  rB.position.set(rearX + 2, yb + 2.6, 0); rB.castShadow = true; inner.add(rB);
+  inner.add(boxMesh(chromeMat, 3.5, 4.5, wid * 0.9, frontX - 1.4, 5.6, 0));
+  inner.add(boxMesh(chromeMat, 3.5, 4.5, wid * 0.9, rearX + 1.4, 5.6, 0));
+  // wing mirrors at the A-pillar
+  for (const sz of [-1, 1]) inner.add(boxMesh(trimMat, 1.5, 2.4, 3, 23, bodyTop + 3, sz * (wid / 2 - 1)));
+  // roof duffel, cinched with the same orange straps as the trailer load
+  inner.add(boxMesh(duffelMat, 12, 5, 10, 6, bodyTop + 10.4, 0.4, 0.06));
+  for (const sx of [2.5, 9.5]) inner.add(boxMesh(strapMat, 1.6, 5.6, 10.8, sx, bodyTop + 10.2, 0.4, 0.06));
 
-  // chunky wheels at the axles (front pair steers) + little fender bulges
+  // chunky wheels at the axles (front pair steers)
   const wheelGeo = new THREE.CylinderGeometry(wheelR, wheelR, G.wheelW + 4, 14);
   const hubGeo = new THREE.CylinderGeometry(wheelR * 0.4, wheelR * 0.4, G.wheelW + 4.4, 8);
   const frontWheels = [];
@@ -508,7 +520,6 @@ function buildCar(G) {
     const hub = new THREE.Mesh(hubGeo, hubMat); hub.rotation.x = Math.PI / 2;
     w.add(tire, hub); w.position.set(x, wheelR, z); group.add(w);
     if (steer) frontWheels.push(w);
-    dome(bodyMat, wheelR * 1.35, wheelR * 1.0, (G.wheelW + 5) / 2, x, wheelR + 1.5, z > 0 ? wid * 0.42 : -wid * 0.42, 10, 6);
   };
   mkWheel(0, -G.carTrack / 2, false); mkWheel(0, G.carTrack / 2, false);
   mkWheel(G.L, -G.carTrack / 2, true); mkWheel(G.L, G.carTrack / 2, true);
@@ -557,20 +568,39 @@ function buildTrailer(G) {
   const tongue = new THREE.Mesh(new THREE.BoxGeometry(G.boxFront, 3.5, 4), tongueMat);
   tongue.position.set(-G.boxFront / 2, deckY - 1, 0); tongue.castShadow = true; inner.add(tongue);
 
-  // ---- cargo: mismatched junk strapped to the deck ----
-  inner.add(boxMesh(mat(COL.crateA, { flat: true }), 22, 17, 20, ctr - 7, topY, -2, 0.12));      // big amber crate
-  inner.add(boxMesh(mat(COL.crateB, { flat: true }), 13, 11, 13, ctr - 11, topY + 17, 5, -0.2));  // small teal crate stacked on top
-  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(7, 7, 17, 10), mat(COL.barrel, { flat: true }));
-  barrel.position.set(ctr + 13, topY + 8.5, 6); barrel.castShadow = barrel.receiveShadow = true; inner.add(barrel);
-  const plank = new THREE.Mesh(new THREE.BoxGeometry(42, 2.5, 7), mat(COL.plank, { flat: true }));
-  plank.position.set(ctr + 2, topY + 11, -9); plank.rotation.z = 0.14; plank.rotation.y = 0.12;
-  plank.castShadow = true; inner.add(plank);
+  // ---- cargo: a moving-day tower — mismatched junk stacked comedically high in
+  //      three tapering tiers, cinched down by two bright-orange ratchet straps.
+  //      The plant and the top box poke up past the straps; the rug overhangs. ----
+  // tier 1 — heavy stuff fills the bed
+  inner.add(boxMesh(mat(COL.crateA), 28, 15, 23, ctr - 17, topY, -1, 0.05));    // big amber crate
+  inner.add(boxMesh(mat(COL.plank),  24, 12, 22, ctr + 11, topY,  1, -0.06));   // wooden crate
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(6, 6, 13, 10), mat(COL.barrel));
+  barrel.position.set(ctr + 29, topY + 6.5, 6); barrel.castShadow = barrel.receiveShadow = true; inner.add(barrel);
+  // tier 2 — the washing machine and the teal crate
+  inner.add(boxMesh(mat(COL.washer), 15, 14, 15, ctr - 17, topY + 15, 1, 0.1));
+  inner.add(boxMesh(mat(COL.crateB), 14, 10, 14, ctr + 10, topY + 12, -3, -0.15));
+  // tier 3 — light junk perched on top
+  inner.add(boxMesh(mat(COL.suitcase), 13, 4.5, 10, ctr + 10, topY + 22, 2, 0.22));  // suitcase on the teal crate
+  inner.add(boxMesh(mat(COL.crateA),    9, 7.5,  9, ctr - 19, topY + 29, -4, -0.28)); // little box atop the washer
+  // rolled rug lying across the pile, overhanging both ends, pitched onto its perches
+  const rugGeo = new THREE.CylinderGeometry(2.9, 2.9, 31, 9); rugGeo.rotateZ(Math.PI / 2);
+  const rug = new THREE.Mesh(rugGeo, mat(COL.rug));
+  rug.position.set(ctr - 4, topY + 32, 8); rug.rotation.z = -0.12; rug.rotation.y = 0.06;
+  rug.castShadow = rug.receiveShadow = true; inner.add(rug);
+  // potted plant riding the suitcase (unstrapped, of course)
+  const pot = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 2, 4, 8), mat(COL.pot));
+  pot.position.set(ctr + 17, topY + 28.5, 6); pot.castShadow = true; inner.add(pot);
+  const plant = new THREE.Mesh(new THREE.IcosahedronGeometry(4.2, 0), mat(COL.plant));
+  plant.position.set(ctr + 17, topY + 34, 6); plant.castShadow = true; inner.add(plant);
 
-  // tie-down straps over the load
-  for (const x of [ctr - 8, ctr + 9]) {
-    const s = new THREE.Mesh(new THREE.BoxGeometry(2.4, 24, wid + 2), strapMat);
-    s.position.set(x, topY + 9, 0); inner.add(s);
-  }
+  // orange ratchet straps over the pile: a top bar pressed into each tier-2 top,
+  // with side runs dropping to the deck edge
+  const strap = (x, topAt) => {
+    inner.add(boxMesh(strapMat, 2.4, 1.6, wid + 3, x, topAt - 0.4, 0));
+    for (const sz of [-1, 1]) inner.add(boxMesh(strapMat, 2.4, topAt - topY - 1, 1.6, x, topY + 1, sz * (wid / 2 + 0.7)));
+  };
+  strap(ctr - 11, topY + 29);   // over the washing machine
+  strap(ctr + 12, topY + 22);   // over the teal crate (the suitcase perches on it)
 
   // rear reflectors on the deck corners
   for (const z of [-wid * 0.34, wid * 0.34]) {
