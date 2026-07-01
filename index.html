@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Trailer Trainer — top-down towing simulator</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Trailer Trainer — competitive towing</title>
 <style>
   :root{
     --asphalt:#1a1d21; --asphalt-2:#22262b; --line:#3a4047;
@@ -14,51 +14,58 @@
     --disp:"Helvetica Neue",Arial,sans-serif;
   }
   *{box-sizing:border-box}
-  html,body{margin:0;height:100%}
-  body{background:var(--asphalt);color:var(--ink);font-family:var(--disp);
-       -webkit-font-smoothing:antialiased;display:flex;flex-direction:column;height:100%;overflow:hidden}
-  header{padding:14px 20px 10px;border-bottom:1px solid var(--line);
-         display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
-  header h1{font-size:18px;margin:0;letter-spacing:.14em;text-transform:uppercase;font-weight:700}
-  header h1 .dash{color:var(--marking)}
-  header .sub{font-family:var(--mono);font-size:11px;color:var(--ink-dim);letter-spacing:.04em}
-
-  .wrap{flex:1;display:flex;min-height:0;overflow:hidden}
-  .stage{flex:1 1 560px;position:relative;min-height:0;background:var(--asphalt)}
+  html,body{margin:0;height:100%;overflow:hidden}
+  body{background:var(--asphalt);color:var(--ink);font-family:var(--disp);-webkit-font-smoothing:antialiased}
+  .stage{position:fixed;inset:0}
   #gl{display:block;width:100%;height:100%}
   .goalArrow{position:absolute;left:0;top:0;z-index:5;pointer-events:none;transform-origin:50% 50%}
 
-  /* floating mouse steering bar, hovering over the view */
-  .steerbar{position:absolute;top:12px;left:16px;right:16px;z-index:5;pointer-events:none}
-  .steerbar .track{position:relative;height:38px;border-radius:20px;corner-shape:superellipse(3);
-                   background:var(--asphalt-2);border:1px solid var(--line);overflow:hidden}
+  .wordmark{position:absolute;top:12px;left:16px;z-index:5;pointer-events:none;font-family:var(--mono);
+            font-size:11px;letter-spacing:.18em;color:var(--ink-dim);text-transform:uppercase;opacity:.75}
+  .wordmark b{color:var(--ink);font-weight:700}
+  .wordmark .dash{color:var(--marking)}
+
+  /* floating mouse steering bar */
+  .steerbar{position:absolute;top:12px;left:50%;transform:translateX(-50%);width:min(520px,58vw);z-index:5;pointer-events:none}
+  .steerbar .track{position:relative;height:34px;border-radius:20px;corner-shape:superellipse(3);
+                   background:rgba(34,38,43,.82);border:1px solid var(--line);overflow:hidden}
   .steerbar .fill{position:absolute;top:0;bottom:0;background-color:var(--cyan);corner-shape:superellipse(3);z-index:1}
   .steerbar .hatch{position:absolute;inset:0;z-index:2;pointer-events:none;
                    background-image:repeating-linear-gradient(45deg, rgba(0,0,0,.07) 0 1.5px, transparent 1.5px 7px)}
   .steerbar .center{position:absolute;left:50%;top:-1px;bottom:-1px;width:2px;background:var(--ink-dim);transform:translateX(-1px);z-index:3}
   .steerbar .lab{display:flex;justify-content:space-between;font-family:var(--mono);font-size:9.5px;
-                 color:var(--ink-dim);letter-spacing:.12em;margin-top:5px}
+                 color:var(--ink-dim);letter-spacing:.12em;margin-top:4px}
   .steerbar .lab .mid{color:var(--ink)}
-  .lockhint{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);font-family:var(--mono);
-            font-size:10.5px;letter-spacing:.08em;color:var(--ink-dim);background:rgba(16,18,21,.6);
-            border:1px solid var(--line);border-radius:14px;corner-shape:superellipse(3);
-            padding:4px 10px;pointer-events:none;z-index:5}
+  .steerbar.danger .track{border-color:var(--warn);box-shadow:0 0 14px rgba(255,90,82,.35)}
 
-  .telem{font-family:var(--mono);font-size:12px;line-height:1.7}
-  .telem .row{display:flex;justify-content:space-between;gap:18px}
-  .telem .k{color:var(--ink-dim);letter-spacing:.03em}
-  .telem .v{color:var(--ink);font-variant-numeric:tabular-nums}
-  .artic-bar{margin-top:7px;height:6px;border-radius:10.5px;corner-shape:superellipse(3);background:var(--asphalt-2);
-             border:1px solid var(--line);position:relative;overflow:hidden}
-  .artic-bar .fill{position:absolute;top:0;bottom:0;left:50%;width:0;background:var(--cyan)}
-  .artic-bar .mid{position:absolute;left:50%;top:-2px;bottom:-2px;width:1px;background:var(--ink-dim)}
+  /* run clock */
+  .runhud{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);z-index:5;pointer-events:none;
+          font-family:var(--mono);font-variant-numeric:tabular-nums;letter-spacing:.06em;
+          background:rgba(16,18,21,.72);border:1px solid var(--line);border-radius:18px;corner-shape:superellipse(3);
+          padding:6px 16px;font-size:15px;display:flex;gap:14px;align-items:baseline}
+  .runhud .t{color:var(--ink);font-size:19px}
+  .runhud .d{color:var(--marking)}
+  .runhud .u{color:var(--ink-dim);font-size:10px;letter-spacing:.1em}
+  body.touch .runhud{bottom:auto;top:12px;font-size:13px}
+  body.touch .runhud .t{font-size:15px}
+  body.touch .steerbar{display:none}
 
-  .status{position:absolute;bottom:12px;right:14px;font-family:var(--mono);font-size:12px;
-          letter-spacing:.08em;text-transform:uppercase;padding:6px 11px;border-radius:21px;
-          corner-shape:superellipse(3);border:1px solid var(--line);background:rgba(16,18,21,.72);color:var(--ink-dim);z-index:4}
-  .status.warn{color:var(--warn);border-color:var(--warn);animation:pulse .5s infinite alternate}
-  .status.good{color:var(--good);border-color:var(--good)}
-  @keyframes pulse{from{opacity:.55}to{opacity:1}}
+  /* overlay cards (intro / results / gates) share a look */
+  .card{background:rgba(20,23,27,.92);border:1px solid var(--line);border-radius:26px;corner-shape:superellipse(3);
+        box-shadow:0 18px 60px rgba(0,0,0,.5);backdrop-filter:blur(3px)}
+  .keysline{font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);letter-spacing:.1em;text-transform:uppercase}
+  .keysline .kbd{font-family:var(--mono);background:rgba(255,255,255,.06);border:1px solid var(--line);
+                 border-radius:9px;corner-shape:superellipse(3);padding:1px 6px;color:var(--ink);text-transform:none}
+
+  /* level intro (top-center, fades once you move) */
+  .intro{position:absolute;top:64px;left:50%;transform:translateX(-50%);z-index:6;width:min(480px,88vw);
+         padding:13px 18px 12px;text-align:center;pointer-events:none;transition:opacity .6s, transform .6s}
+  .intro.faded{opacity:0;transform:translateX(-50%) translateY(-8px)}
+  .intro .lname{font-family:var(--mono);font-size:15px;letter-spacing:.14em;color:var(--marking);text-transform:uppercase}
+  .intro .lgoal{font-size:12.5px;color:var(--ink);line-height:1.45;margin:6px 0 7px}
+  .intro .lrec{font-family:var(--mono);font-size:11px;color:var(--ink-dim);letter-spacing:.05em;min-height:14px}
+  .intro .lrec b{color:var(--ink);font-weight:600}
+  body.touch .intro{top:56px}
 
   /* red border flash + game-over overlay */
   .ring{position:absolute;inset:0;pointer-events:none;box-shadow:inset 0 0 0 0 transparent;transition:box-shadow .12s;z-index:6}
@@ -68,116 +75,98 @@
   .dead.show{display:flex;animation:deadflash .55s ease-out}
   .dead .big{font-family:var(--mono);font-size:30px;letter-spacing:.16em;color:var(--warn);text-transform:uppercase;
              text-shadow:0 0 28px rgba(255,90,82,.55)}
-  .dead .sub2{font-family:var(--mono);font-size:12px;color:#ffb3af;letter-spacing:.14em}
+  .dead .sub2{font-family:var(--mono);font-size:11px;color:#ffb3af;letter-spacing:.14em}
   @keyframes deadflash{0%{background:rgba(196,58,48,.42)}100%{background:rgba(52,12,12,.30)}}
 
-  .banner{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
-          flex-direction:column;gap:14px;background:rgba(16,18,21,.55);backdrop-filter:blur(2px);z-index:7}
-  .banner.show{display:flex}
-  .banner .big{font-family:var(--mono);font-size:26px;letter-spacing:.12em;color:var(--good);
-               text-transform:uppercase;text-shadow:0 0 24px rgba(86,217,138,.4)}
-  .banner .sub2{font-family:var(--mono);font-size:12px;color:var(--ink-dim)}
-
-  aside{flex:0 0 262px;border-left:1px solid var(--line);padding:16px 18px;
-        display:flex;flex-direction:column;gap:16px;background:var(--asphalt-2);overflow-y:auto;min-height:0}
-  aside h2{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
-           color:var(--marking);margin:0 0 8px;font-weight:600}
-  .goal{font-size:13px;line-height:1.45;color:var(--ink);min-height:38px}
-  .meta{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11px;color:var(--ink-dim);margin-top:6px}
-  .records{font-family:var(--mono);font-size:11.5px;margin-top:9px;border-top:1px solid var(--line);padding-top:8px}
-  .board{margin-bottom:8px}
-  .board-h{color:var(--ink-dim);letter-spacing:.05em;text-transform:uppercase;font-size:9.5px;margin-bottom:3px}
-  .board-rows{display:flex;flex-direction:column;gap:1px}
-  .brow{display:grid;grid-template-columns:14px 1fr auto;align-items:baseline;gap:7px}
+  /* results (level clear) */
+  .results{position:absolute;inset:0;display:none;align-items:center;justify-content:center;z-index:8;
+           background:rgba(12,14,17,.45)}
+  .results.show{display:flex}
+  .res-card{width:min(620px,94vw);max-height:92vh;overflow-y:auto;padding:20px 24px 16px;text-align:center}
+  .res-clear{font-family:var(--mono);font-size:15px;letter-spacing:.3em;color:var(--good);text-transform:uppercase;
+             text-shadow:0 0 22px rgba(86,217,138,.4)}
+  .res-nums{display:flex;justify-content:center;gap:34px;margin:12px 0 4px;font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .res-num .v{font-size:34px;color:var(--ink)}
+  .res-num .v.pb{color:var(--good)}
+  .res-num .k{font-size:9.5px;color:var(--ink-dim);letter-spacing:.22em;text-transform:uppercase;margin-top:2px}
+  .res-num .pbtag{font-size:10px;color:var(--good);letter-spacing:.14em;height:14px}
+  .res-status{font-family:var(--mono);font-size:11.5px;color:var(--ink-dim);letter-spacing:.06em;min-height:16px;margin-bottom:10px}
+  .res-status .ok{color:var(--good)} .res-status .bad{color:var(--warn)}
+  .res-boards{display:grid;grid-template-columns:1fr 1fr;gap:14px;text-align:left;margin-bottom:12px}
+  .board-h{font-family:var(--mono);color:var(--ink-dim);letter-spacing:.14em;text-transform:uppercase;font-size:9.5px;
+           margin-bottom:5px;border-bottom:1px solid var(--line);padding-bottom:4px}
+  .board-rows{display:flex;flex-direction:column;gap:2px;font-family:var(--mono);font-size:11.5px}
+  .brow{display:grid;grid-template-columns:20px 1fr auto;align-items:baseline;gap:7px;padding:1px 4px;border-radius:8px}
   .brow .br-rank{color:var(--ink-dim)}
   .brow .br-name{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .brow .br-val{color:var(--marking);font-variant-numeric:tabular-nums}
+  .brow.mine{background:rgba(86,217,138,.1)}
   .brow.mine .br-name{color:var(--good)}
-  .board-empty{color:var(--ink-dim);opacity:.6}
-  .rec-row{display:flex;justify-content:space-between;align-items:baseline;margin:3px 0}
-  .rec-row .rec-k{color:var(--ink-dim);letter-spacing:.02em}
-  .rec-row .rec-v{color:var(--ink)}
-  .namemodal{position:absolute;inset:0;display:none;align-items:center;justify-content:center;z-index:12;
-             background:rgba(10,12,14,.6);backdrop-filter:blur(2px)}
-  .namemodal.show{display:flex}
-  .nm-card{background:var(--asphalt);border:1px solid var(--line);border-radius:32px;corner-shape:superellipse(3);
-           padding:20px 22px;width:300px;max-width:84%;box-shadow:0 18px 50px rgba(0,0,0,.5)}
-  .nm-title{font-family:var(--mono);font-size:17px;letter-spacing:.06em;color:var(--good);margin-bottom:4px}
-  .nm-sub{font-family:var(--mono);font-size:11px;color:var(--ink-dim);margin-bottom:12px;line-height:1.4}
-  .nm-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
-  .nm-chips button{font-family:var(--mono);font-size:11.5px;color:var(--ink);background:rgba(255,255,255,.05);
-                   border:1px solid var(--line);border-radius:16px;corner-shape:superellipse(3);padding:4px 11px;cursor:pointer}
-  .nm-chips button:hover{border-color:var(--marking);color:var(--marking)}
-  .nm-input{width:100%;box-sizing:border-box;font-family:var(--mono);font-size:14px;color:var(--ink);
-            background:rgba(0,0,0,.25);border:1px solid var(--line);border-radius:16px;corner-shape:superellipse(3);
-            padding:9px 12px;margin-bottom:12px;outline:none}
-  .nm-input:focus{border-color:var(--marking)}
-  .nm-actions{display:flex;gap:8px;justify-content:flex-end}
-  .nm-actions button{font-family:var(--mono);font-size:12.5px;padding:7px 16px;border-radius:16px;corner-shape:superellipse(3);
-                     border:1px solid var(--line);background:transparent;color:var(--ink-dim);cursor:pointer}
-  .nm-actions button.primary{background:var(--good);color:#0e1b12;border-color:var(--good);font-weight:600}
+  .board-empty{color:var(--ink-dim);opacity:.6;font-size:11px}
+  .res-foot{display:flex;justify-content:center;gap:16px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:11px}
+  .tapbtns{display:none;gap:10px;justify-content:center;margin-top:10px}
+  body.touch .tapbtns{display:flex}
+  .tapbtns button{font-size:13px;padding:10px 18px}
+  @media (max-width:560px){ .res-boards{grid-template-columns:1fr} }
 
-  .levels{display:flex;flex-direction:column;gap:5px}
-  .lvl{display:flex;align-items:center;gap:8px;text-align:left;font-family:var(--mono);font-size:11.5px;
-       padding:7px 9px;border-radius:21px;corner-shape:superellipse(3);background:var(--asphalt);color:var(--ink-dim);
-       border:1px solid var(--line);cursor:pointer;transition:.1s}
-  .lvl:hover{border-color:var(--marking);color:var(--ink)}
-  .lvl.active{border-color:var(--cyan);color:var(--ink);background:#1d2a2e}
-  .lvl .tick{color:var(--good);width:12px;display:inline-block}
+  /* full-screen overlays: name gate + level select */
+  .gate{position:absolute;inset:0;display:none;align-items:center;justify-content:center;z-index:10;
+        background:rgba(12,14,17,.55)}
+  .gate.show{display:flex}
+  .gate-card{width:min(420px,92vw);padding:26px 28px;text-align:center}
+  .gate-title{font-family:var(--mono);font-size:19px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink)}
+  .gate-title .dash{color:var(--marking)}
+  .gate-sub{font-size:12.5px;color:var(--ink-dim);line-height:1.5;margin:10px 0 16px}
+  .gate-input{width:100%;font-family:var(--mono);font-size:16px;text-align:center;color:var(--ink);
+              background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:16px;corner-shape:superellipse(3);
+              padding:11px 12px;outline:none;letter-spacing:.06em}
+  .gate-input:focus{border-color:var(--marking)}
+  .gate-go{margin-top:14px;width:100%;font-family:var(--mono);font-size:14px;letter-spacing:.14em;padding:11px;
+           border-radius:16px;corner-shape:superellipse(3);border:1px solid var(--good);background:var(--good);
+           color:#10241a;font-weight:700;cursor:pointer;text-transform:uppercase}
 
-  .keys{display:grid;grid-template-columns:repeat(3,32px);grid-auto-rows:32px;gap:5px;justify-content:start}
-  .key{display:flex;align-items:center;justify-content:center;border:1px solid var(--line);
-       border-radius:21px;corner-shape:superellipse(3);font-family:var(--mono);font-size:12px;
-       color:var(--ink-dim);background:var(--asphalt);transition:.06s}
-  .key.lit{background:var(--marking);color:#1a1d21;border-color:var(--marking)}
-  .key.ghost{opacity:0}
-  .drive-row{display:flex;align-items:center;gap:11px}
-  .throttle{position:relative;width:15px;height:69px;border:1px solid var(--line);border-radius:25px;
-            corner-shape:superellipse(3);background:rgba(255,255,255,.04);overflow:hidden}
-  .throttle::before{content:"";position:absolute;left:0;right:0;top:50%;height:1px;background:var(--line);z-index:1}
-  .thr-fill{position:absolute;left:1px;right:1px;top:50%;height:0;border-radius:21px;corner-shape:superellipse(3);
-            background:var(--good);transition:none}
-  .thr-labels{display:flex;flex-direction:column;justify-content:space-between;height:69px;
-              font-family:var(--mono);font-size:9.5px;color:var(--ink-dim);letter-spacing:.04em}
-  .legend-line{display:flex;align-items:center;gap:9px;font-size:12.5px;margin:4px 0;color:var(--ink)}
-  .swatch{width:18px;height:3px;border-radius:7px;corner-shape:superellipse(3);flex:0 0 auto}
-  .note{font-size:12px;line-height:1.45;color:var(--ink-dim)}
-  .note b{color:var(--ink);font-weight:600}
-  .btns{display:flex;gap:8px;flex-wrap:wrap}
-  button{font-family:var(--mono);font-size:11px;letter-spacing:.04em;padding:8px 11px;border-radius:21px;
+  .lvsel{position:absolute;inset:0;display:none;align-items:center;justify-content:center;z-index:9;
+         background:rgba(12,14,17,.6)}
+  .lvsel.show{display:flex}
+  .lv-card{width:min(660px,94vw);max-height:90vh;overflow-y:auto;padding:18px 22px 14px}
+  .lv-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+  .lv-title{font-family:var(--mono);font-size:12px;letter-spacing:.22em;color:var(--marking);text-transform:uppercase}
+  .lv-name{font-family:var(--mono);font-size:11px;color:var(--ink-dim)}
+  .lv-name b{color:var(--good);cursor:pointer;border-bottom:1px dashed rgba(86,217,138,.5)}
+  .lv-rows{display:flex;flex-direction:column;gap:4px}
+  .lv-row{display:grid;grid-template-columns:26px 1fr auto auto;gap:10px;align-items:baseline;text-align:left;
+          font-family:var(--mono);font-size:12px;padding:8px 10px;border-radius:14px;corner-shape:superellipse(3);
+          background:rgba(255,255,255,.02);border:1px solid var(--line);color:var(--ink);cursor:pointer;transition:.08s}
+  .lv-row:hover,.lv-row.sel{border-color:var(--marking)}
+  .lv-row.sel{background:rgba(242,196,77,.08)}
+  .lv-row .n{color:var(--ink-dim)}
+  .lv-row .pb{color:var(--cyan);font-size:10.5px;font-variant-numeric:tabular-nums}
+  .lv-row .wr{color:var(--marking);font-size:10.5px;font-variant-numeric:tabular-nums}
+  .lv-foot{margin-top:12px;text-align:center}
+
+  button{font-family:var(--mono);font-size:11px;letter-spacing:.04em;padding:8px 12px;border-radius:16px;
          corner-shape:superellipse(3);cursor:pointer;background:var(--asphalt);color:var(--ink);
          border:1px solid var(--line);transition:.1s}
   button:hover{border-color:var(--marking);color:var(--marking)}
-  button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
-  button.on{background:var(--marking);color:#1a1d21;border-color:var(--marking)}
-  button.primary{background:var(--good);color:#10241a;border-color:var(--good)}
-  .kbd{font-family:var(--mono);background:var(--asphalt);border:1px solid var(--line);border-radius:14px;
-       corner-shape:superellipse(3);padding:0 5px;color:var(--ink)}
+  button.primary{background:var(--good);color:#10241a;border-color:var(--good);font-weight:600}
 
   /* ---------- touch controls (phone) ---------- */
   .touchctl{display:none}
-  .touchonly{display:none}
   body.touch .touchctl{display:block}
-  body.touch .touchonly{display:block}
-  body.touch .lockhint{display:none}
-  /* the steering viewer bar drops to the bottom and becomes the steering readout */
-  body.touch .steerbar{top:auto;bottom:16px;left:14px;right:94px;z-index:7}
-  body.touch .steerbar .track{height:46px;border-radius:24px}
-  body.touch .steerbar .lab{display:none}
-  /* keep the status pill clear of the throttle slider */
-  body.touch .status{top:12px;bottom:auto}
-  /* big transparent steering touch zone — fills the bottom-left; only X matters */
-  .touchSteer{position:absolute;left:0;right:88px;bottom:0;
-              height:clamp(150px,34vh,300px);z-index:6;touch-action:none}
-  /* vertical acc/rev slider on the right, with a brake button stacked beneath it */
-  .touchThrottle{position:absolute;right:14px;bottom:90px;width:72px;
-                 height:clamp(130px,30vh,240px);z-index:7;touch-action:none;overflow:hidden;
-                 border:1px solid var(--line);border-radius:30px;corner-shape:superellipse(3);
-                 background:var(--asphalt-2)}
+  .touchSteer{position:absolute;left:0;right:88px;bottom:0;height:clamp(150px,34vh,300px);z-index:6;touch-action:none}
+  .touchSteerBar{position:absolute;left:14px;right:94px;bottom:16px;z-index:7;pointer-events:none;display:none}
+  body.touch .touchSteerBar{display:block}
+  .touchSteerBar .track{position:relative;height:46px;border-radius:24px;corner-shape:superellipse(3);
+                        background:rgba(34,38,43,.82);border:1px solid var(--line);overflow:hidden}
+  .touchSteerBar .fill{position:absolute;top:0;bottom:0;background-color:var(--cyan);z-index:1}
+  .touchSteerBar .center{position:absolute;left:50%;top:-1px;bottom:-1px;width:2px;background:var(--ink-dim);z-index:2}
+  .touchThrottle{position:absolute;right:14px;bottom:90px;width:72px;height:clamp(130px,30vh,240px);z-index:7;
+                 touch-action:none;overflow:hidden;border:1px solid var(--line);border-radius:30px;
+                 corner-shape:superellipse(3);background:rgba(34,38,43,.82)}
   .touchBrake{position:absolute;right:14px;bottom:16px;width:72px;height:66px;z-index:7;touch-action:none;
-              display:none;align-items:center;justify-content:center;
-              border:1px solid var(--line);border-radius:24px;corner-shape:superellipse(3);
-              background:var(--asphalt-2);font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--ink-dim)}
+              display:none;align-items:center;justify-content:center;border:1px solid var(--line);
+              border-radius:24px;corner-shape:superellipse(3);background:rgba(34,38,43,.82);
+              font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--ink-dim)}
   body.touch .touchBrake{display:flex}
   .touchBrake.pressed{background:var(--warn);border-color:var(--warn);color:#2a0e0c}
   .touchThrottle .tt-fill{position:absolute;left:2px;right:2px;top:50%;height:0;z-index:1;
@@ -191,145 +180,110 @@
                  font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--ink-dim)}
   .touchThrottle .tt-up{top:9px}
   .touchThrottle .tt-dn{bottom:9px}
-
-  @media (max-width:780px){
-    html,body{height:auto;min-height:100%;overflow:auto}
-    .wrap{overflow:visible;flex-wrap:wrap}
-    aside{flex-basis:100%;border-left:none;border-top:1px solid var(--line);overflow:visible;min-height:auto}
-    .stage{flex-basis:100%;min-height:60vh}
-    body.touch .stage{min-height:84vh}
-  }
 </style>
 </head>
 <body>
-<header>
-  <h1>Trailer Trainer <span class="dash">//</span></h1>
-  <span class="sub">top-down towing &amp; reverse-articulation practice</span>
-</header>
+<div class="stage">
+  <canvas id="gl"></canvas>
+  <svg class="goalArrow" id="goalArrow" width="34" height="34" viewBox="-17 -17 34 34" style="display:none">
+    <circle r="15" fill="rgba(16,18,21,.72)" stroke="var(--marking)" stroke-width="2"/>
+    <path d="M -8 -6 L 9 0 L -8 6 Z" fill="var(--marking)"/>
+  </svg>
 
-<div class="wrap">
-  <div class="stage">
-    <canvas id="gl"></canvas>
-    <svg class="goalArrow" id="goalArrow" width="34" height="34" viewBox="-17 -17 34 34" style="display:none">
-      <circle r="15" fill="rgba(16,18,21,.72)" stroke="var(--marking)" stroke-width="2"/>
-      <path d="M -8 -6 L 9 0 L -8 6 Z" fill="var(--marking)"/>
-    </svg>
+  <div class="wordmark"><b>Trailer Trainer</b> <span class="dash">//</span></div>
 
-    <div class="steerbar">
-      <div class="track">
-        <div class="fill" id="steerFill"></div>
-        <div class="hatch" id="steerHatch"></div>
-        <div class="center"></div>
+  <div class="steerbar" id="steerbar">
+    <div class="track">
+      <div class="fill" id="steerFill"></div>
+      <div class="hatch" id="steerHatch"></div>
+      <div class="center"></div>
+    </div>
+    <div class="lab"><span>&#9664; LEFT</span><span class="mid" id="steerMid">STEER &middot; 0&deg;</span><span>RIGHT &#9654;</span></div>
+  </div>
+
+  <div class="runhud" id="runHud">
+    <span class="t" id="hudTime">0.0</span><span class="u">SEC</span>
+    <span class="d" id="hudDist">0</span><span class="u">DIST</span>
+  </div>
+
+  <div class="intro card" id="intro">
+    <div class="lname" id="introName"></div>
+    <div class="lgoal" id="introGoal"></div>
+    <div class="lrec" id="introRec"></div>
+    <div class="keysline" id="introKeys" style="margin-top:7px"><span class="kbd">E</span> drive · <span class="kbd">D</span> reverse · mouse steers · <span class="kbd">Ctrl</span> brake · <span class="kbd">Space</span> restart · <span class="kbd">Tab</span> levels</div>
+  </div>
+
+  <!-- touch: steering zone + readout bar bottom-left; vertical acc/rev slider right -->
+  <div class="touchSteer touchctl" id="touchSteer"></div>
+  <div class="touchSteerBar" id="touchSteerBar">
+    <div class="track">
+      <div class="fill" id="tsbFill"></div>
+      <div class="center"></div>
+    </div>
+  </div>
+  <div class="touchThrottle touchctl" id="touchThrottle">
+    <div class="tt-fill" id="ttFill"></div>
+    <div class="tt-center"></div>
+    <div class="tt-thumb" id="ttThumb"></div>
+    <div class="tt-lab tt-up">ACC</div>
+    <div class="tt-lab tt-dn">REV</div>
+  </div>
+  <div class="touchBrake" id="touchBrake">BRAKE</div>
+
+  <div class="ring" id="ring"></div>
+  <div class="dead" id="dead">
+    <div class="big" id="deadBig">Jackknifed</div>
+    <div class="sub2">rewinding…</div>
+    <div class="keysline" style="margin-top:6px"><span class="kbd">Space</span> restart run</div>
+  </div>
+
+  <div class="results" id="results">
+    <div class="res-card card">
+      <div class="res-clear">Level Clear</div>
+      <div class="res-nums">
+        <div class="res-num"><div class="v" id="resTime">0.0s</div><div class="k">time</div><div class="pbtag" id="resTimePB"></div></div>
+        <div class="res-num"><div class="v" id="resDist">0</div><div class="k">distance</div><div class="pbtag" id="resDistPB"></div></div>
       </div>
-      <div class="lab"><span>&#9664; LEFT</span><span class="mid" id="steerMid">STEER &middot; 0&deg;</span><span>RIGHT &#9654;</span></div>
-    </div>
-
-    <div class="lockhint" id="lockHint">click the view to capture the mouse</div>
-
-    <!-- touch: steering zone fills the bottom-left; vertical acc/rev slider on the right -->
-    <div class="touchSteer touchctl" id="touchSteer"></div>
-    <div class="touchThrottle touchctl" id="touchThrottle">
-      <div class="tt-fill" id="ttFill"></div>
-      <div class="tt-center"></div>
-      <div class="tt-thumb" id="ttThumb"></div>
-      <div class="tt-lab tt-up">ACC</div>
-      <div class="tt-lab tt-dn">REV</div>
-    </div>
-    <div class="touchBrake" id="touchBrake">BRAKE</div>
-
-    <div class="status" id="status">READY</div>
-
-    <div class="ring" id="ring"></div>
-    <div class="dead" id="dead"><div class="big" id="deadBig">Jackknifed</div><div class="sub2">BRRR — rewinding…</div></div>
-
-    <div class="banner" id="banner">
-      <div class="big" id="bannerBig">Level clear</div>
-      <div class="sub2" id="bannerSub"></div>
-      <button class="primary" id="btnNext">Next level &nbsp;(N / Space)</button>
-    </div>
-
-    <div class="namemodal" id="nameModal">
-      <div class="nm-card">
-        <div class="nm-title" id="nmTitle">New highscore!</div>
-        <div class="nm-sub" id="nmSub"></div>
-        <div class="nm-chips" id="nmChips"></div>
-        <input class="nm-input" id="nmInput" maxlength="14" placeholder="enter name" autocomplete="off" spellcheck="false"/>
-        <div class="nm-actions">
-          <button class="primary" id="nmSave">Save</button>
-          <button id="nmSkip">Skip</button>
-        </div>
+      <div class="res-status" id="resStatus"></div>
+      <div class="res-boards">
+        <div><div class="board-h">Fastest</div><div class="board-rows" id="boardTime"></div></div>
+        <div><div class="board-h">Shortest</div><div class="board-rows" id="boardDist"></div></div>
+      </div>
+      <div class="res-foot keysline">
+        <span><span class="kbd">Space</span> retry</span>
+        <span><span class="kbd">Enter</span> next level</span>
+        <span><span class="kbd">Tab</span> levels</span>
+      </div>
+      <div class="tapbtns">
+        <button id="tapRetry">↺ Retry</button>
+        <button class="primary" id="tapNext">Next level →</button>
+        <button id="tapLevels">Levels</button>
       </div>
     </div>
   </div>
 
-  <aside>
-    <div>
-      <h2>Level</h2>
-      <div class="levels" id="levelList"></div>
-      <div class="goal" id="goal"></div>
-      <div class="meta"><span id="prog"></span></div>
-      <div class="records">
-        <div class="board"><div class="board-h">shortest distance</div><div class="board-rows" id="boardDist"></div></div>
-        <div class="board"><div class="board-h">quickest time</div><div class="board-rows" id="boardTime"></div></div>
-        <div class="rec-row run"><span class="rec-k">this run</span><span class="rec-v" id="recRun">&mdash;</span></div>
+  <div class="lvsel" id="lvsel">
+    <div class="lv-card card">
+      <div class="lv-head">
+        <span class="lv-title">Levels</span>
+        <span class="lv-name">driving as <b id="lvName" title="click to change name">?</b></span>
+      </div>
+      <div class="lv-rows" id="lvRows"></div>
+      <div class="lv-foot keysline">
+        <span class="kbd">1–9</span> jump · <span class="kbd">↑↓</span> + <span class="kbd">Enter</span> pick · <span class="kbd">Esc</span> close ·
+        <span class="kbd">C</span> camera · <span class="kbd">T</span> trails · <span class="kbd">Shift</span> handbrake
       </div>
     </div>
+  </div>
 
-    <div>
-      <h2>Telemetry</h2>
-      <div class="telem">
-        <div class="row"><span class="k">SPEED</span><span class="v" id="hSpeed">0</span></div>
-        <div class="row"><span class="k">GEAR</span><span class="v" id="hGear">N</span></div>
-        <div class="row"><span class="k">STEER</span><span class="v" id="hSteer">0&deg;</span></div>
-        <div class="row"><span class="k">ARTIC</span><span class="v" id="hArtic">0&deg;</span></div>
-        <div class="artic-bar"><div class="mid"></div><div class="fill" id="articFill"></div></div>
-      </div>
+  <div class="gate" id="nameGate">
+    <div class="gate-card card">
+      <div class="gate-title">Trailer Trainer <span class="dash">//</span></div>
+      <div class="gate-sub">Back the trailer in, beat the clock, climb two leaderboards — fastest run and shortest distance. Pick your driver name:</div>
+      <input class="gate-input" id="ngInput" maxlength="14" placeholder="driver name" autocomplete="off" spellcheck="false"/>
+      <button class="gate-go" id="ngGo">Start driving</button>
     </div>
-
-    <div>
-      <h2>Driving</h2>
-      <div class="drive-row">
-        <div class="keys" aria-hidden="true">
-          <div class="key ghost"></div><div class="key" id="kUp">E</div><div class="key ghost"></div>
-          <div class="key" id="kLeft">S</div><div class="key" id="kDown">D</div><div class="key" id="kRight">F</div>
-        </div>
-        <div class="throttle" aria-hidden="true" title="throttle: accelerate / reverse">
-          <div class="thr-fill" id="thrFill"></div>
-        </div>
-        <div class="thr-labels" aria-hidden="true"><span>acc</span><span>rev</span></div>
-      </div>
-      <p class="note" style="margin-top:9px">
-        <b>Steer with the mouse</b> — left/right over the view (click to capture it, Esc to release); the bar
-        up top is your angle, and the wheel holds wherever you leave it. <b>Tap</b> <span class="kbd">E</span>/<span class="kbd">D</span> for slow creep,
-        hold for full speed; <span class="kbd">Ctrl</span> brakes — stand on it and the nose dives, the tail squats
-        under power, and the whole rig leans through the corners.
-        <span class="kbd">S</span>/<span class="kbd">F</span> still steer; <span class="kbd">IJKL</span>/arrows too.
-        <span class="kbd">R</span> retry · <span class="kbd">N</span>/<span class="kbd">Space</span> next.
-        At speed, <span class="kbd">Shift</span> is the handbrake — flick the wheel and the trailer slings out,
-        then whips the whole rig around. Mind the jackknife.
-      </p>
-      <p class="note touchonly" style="margin-top:9px">
-        <b>On a phone:</b> drag along the bar at the bottom to steer — the wheel holds where you leave it.
-        The slider on the right is throttle: push up to accelerate, down to reverse, release to coast;
-        the <b>BRAKE</b> button below it stops you while held.
-      </p>
-    </div>
-
-    <div>
-      <h2>Wheel paths</h2>
-      <div class="legend-line"><span class="swatch" style="background:var(--cyan)"></span>Front wheels</div>
-      <div class="legend-line"><span class="swatch" style="background:var(--amber)"></span>Car rear axle</div>
-      <div class="legend-line"><span class="swatch" style="background:var(--magenta)"></span>Trailer axle</div>
-      <p class="note" style="margin-top:7px">Each path sits <b>inside</b> the one ahead — the cut. Tighter turn, bigger gap.</p>
-    </div>
-
-    <div class="btns">
-      <button id="btnTrails">Trails: off</button>
-      <button id="btnClear">Clear trails</button>
-      <button id="btnReset">Retry (R)</button>
-      <button id="btnCam" class="on">Camera: follow car</button>
-    </div>
-  </aside>
+  </div>
 </div>
 
 <script type="module" src="/src/main.js"></script>
