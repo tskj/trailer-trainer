@@ -336,7 +336,7 @@ export function createScene(canvas, G) {
     //     load vibrates at pace. Cosmetic only; each piece tips about its base pivot. ---
     const nowW = performance.now(), wdt = Math.min((nowW - (lastWob || nowW)) / 1000, 1 / 30);
     lastWob = nowW;
-    const rollDrive = (pose.trRoll || 0) * 3.0, pitchDrive = (trPitch + (pose.pitch || 0)) * 1.6;
+    const rollDrive = (pose.trRoll || 0) * 4.2, pitchDrive = (trPitch + (pose.pitch || 0)) * 2.0;
     const shim = Math.min(1, Math.abs(pose.v || 0) / 600) * 0.01, wT = nowW / 1000;
     for (const w of trailer.wobblers) {
       const tx = clamp(rollDrive * w.gain + shim * Math.sin(wT * (16 + w.w0 * 1.5) + w.ph), -w.max, w.max);
@@ -629,23 +629,23 @@ function buildTrailer(G) {
     wobblers.push({ p, thx: 0, vx: 0, thz: 0, vz: 0, gain: j(gain, 0.25), w0: j(w0, 0.2), zeta: j(zeta, 0.2), max, ph: Math.random() * Math.PI * 2 });
   };
   // tier 1 — heavy stuff fills the bed (strapped tight: barely moves)
-  wob(boxMesh(mat(COL.crateA), 28, 15, 23, ctr - 17, topY, -1, 0.05), topY, 0.35, 13, 0.5, 0.035);   // big amber crate
-  wob(boxMesh(mat(COL.plank),  24, 12, 22, ctr + 11, topY,  1, -0.06), topY, 0.35, 14, 0.5, 0.035);  // wooden crate
+  wob(boxMesh(mat(COL.crateA), 28, 15, 23, ctr - 17, topY, -1, 0.05), topY, 0.35, 13, 0.5, 0.045);   // big amber crate
+  wob(boxMesh(mat(COL.plank),  24, 12, 22, ctr + 11, topY,  1, -0.06), topY, 0.35, 14, 0.5, 0.045);  // wooden crate
   const barrel = new THREE.Mesh(new THREE.CylinderGeometry(6, 6, 13, 10), mat(COL.barrel));
   barrel.position.set(ctr + 29, topY + 6.5, 6); barrel.castShadow = barrel.receiveShadow = true;
-  wob(barrel, topY, 0.7, 9, 0.3, 0.09);                                                              // loose barrel
+  wob(barrel, topY, 0.7, 9, 0.3, 0.12);                                                              // loose barrel
   // tier 2 — the washing machine and the teal crate (strapped)
-  wob(boxMesh(mat(COL.washer), 15, 14, 15, ctr - 17, topY + 15, 1, 0.1),   topY + 15, 0.55, 11, 0.4, 0.04);
-  wob(boxMesh(mat(COL.crateB), 14, 10, 14, ctr + 10, topY + 12, -3, -0.15), topY + 12, 0.55, 11, 0.4, 0.04);
+  wob(boxMesh(mat(COL.washer), 15, 14, 15, ctr - 17, topY + 15, 1, 0.1),   topY + 15, 0.55, 11, 0.4, 0.05);
+  wob(boxMesh(mat(COL.crateB), 14, 10, 14, ctr + 10, topY + 12, -3, -0.15), topY + 12, 0.55, 11, 0.4, 0.05);
   // tier 3 — light junk perched on top (unstrapped: this is where the drama lives)
-  wob(boxMesh(mat(COL.suitcase), 13, 4.5, 10, ctr + 10, topY + 22, 2, 0.22),  topY + 22, 0.95, 8.5, 0.25, 0.14);
-  wob(boxMesh(mat(COL.crateA),    9, 7.5,  9, ctr - 19, topY + 29, -4, -0.28), topY + 29, 1.1, 9, 0.22, 0.16);
+  wob(boxMesh(mat(COL.suitcase), 13, 4.5, 10, ctr + 10, topY + 22, 2, 0.22),  topY + 22, 0.95, 8.5, 0.25, 0.18);
+  wob(boxMesh(mat(COL.crateA),    9, 7.5,  9, ctr - 19, topY + 29, -4, -0.28), topY + 29, 1.1, 9, 0.22, 0.2);
   // rolled rug lying across the pile, overhanging both ends, pitched onto its perches
   const rugGeo = new THREE.CylinderGeometry(2.9, 2.9, 31, 9); rugGeo.rotateZ(Math.PI / 2);
   const rug = new THREE.Mesh(rugGeo, mat(COL.rug));
   rug.position.set(ctr - 4, topY + 32, 8); rug.rotation.z = -0.12; rug.rotation.y = 0.06;
   rug.castShadow = rug.receiveShadow = true;
-  wob(rug, topY + 29, 0.75, 7, 0.3, 0.1);
+  wob(rug, topY + 29, 0.75, 7, 0.3, 0.13);
   // potted plant riding the suitcase (unstrapped, of course): the comedy lead —
   // lowest damping, biggest lever, does big lazy swings
   const plantG = new THREE.Group();
@@ -654,7 +654,7 @@ function buildTrailer(G) {
   const plant = new THREE.Mesh(new THREE.IcosahedronGeometry(4.2, 0), mat(COL.plant));
   plant.position.y = 7.5; plant.castShadow = true;
   plantG.add(pot, plant); plantG.position.set(ctr + 17, topY + 26.5, 6);
-  wob(plantG, topY + 26.5, 1.4, 6.5, 0.12, 0.22);
+  wob(plantG, topY + 26.5, 1.4, 6.5, 0.12, 0.28);
 
   // orange ratchet straps over the pile: a bar pressed into each tier-2 top, sides
   // pulled taut down-and-out to hook the rail tops — they graze the tier-1 crate
