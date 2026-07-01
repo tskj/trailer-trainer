@@ -20,7 +20,7 @@ const WALL_H = 34;                    // raised-region / wall height
 const TRAIL_Y = 0.6;                  // trail ribbon height above ground
 const DISPLAY_FOV = 52;               // the framing the player sees
 const OVERSCAN = 1.12;                // render this much wider so the lens barrel can sample outward
-const SS = 2;                         // supersample: render the scene SS x larger and box-downsample (AA)
+const MSAA = 4;                       // scene-target multisample count (AA at ~1/4 the cost of the old 2x2 supersample)
 
 // ---- palette (sRGB hex; vibrant + cute) ----
 const COL = {
@@ -81,7 +81,8 @@ const SKY_DIR = new THREE.Vector3(0.0, 1.0, 0.0);               // cool fill fro
 const BNC_DIR = new THREE.Vector3(-0.55, 0.18, -0.42).normalize(); // warm bounce, anti-sun low
 
 export function createScene(canvas, G) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+  // antialias:false — the default framebuffer only ever receives the post quad; scene AA is MSAA on the HDR target
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;   // soft penumbra -> room for the warm colour trail
@@ -98,8 +99,8 @@ export function createScene(canvas, G) {
   // 1 on landscape (desktop unchanged); grows gently as the screen gets taller than wide.
   let viewScale = 1;
 
-  // ---- HDR target (supersampled), bloom buffers, hand-written grade pass ----
-  let rt = makeTarget(1, 1);                          // scene, rendered SS x larger
+  // ---- HDR target (multisampled), bloom buffers, hand-written grade pass ----
+  let rt = makeTarget(1, 1, { samples: MSAA });       // scene; MSAA resolves when the texture is sampled
   let brightRT = makeTarget(1, 1, { depth: false });  // bloom: extracted highlights
   let blurA = makeTarget(1, 1, { depth: false });
   let blurB = makeTarget(1, 1, { depth: false });
@@ -243,10 +244,10 @@ export function createScene(canvas, G) {
     // framing — gives back horizontal context without shrinking the rig to a dot.
     viewScale = w >= h ? 1 : clamp(Math.pow(h / w, 0.4), 1, 1.5);
     const pr = renderer.getPixelRatio();
-    const W = Math.max(1, Math.floor(w * pr * SS)), H = Math.max(1, Math.floor(h * pr * SS));
+    const W = Math.max(1, Math.floor(w * pr)), H = Math.max(1, Math.floor(h * pr));
     rt.setSize(W, H);
     post.material.uniforms.uRes.value.set(W, H);
-    const bw = Math.max(1, Math.floor(w * pr)), bh = Math.max(1, Math.floor(h * pr));   // bloom at ~display res
+    const bw = Math.max(1, Math.floor(w * pr / 2)), bh = Math.max(1, Math.floor(h * pr / 2));   // bloom at half res — it's all blur anyway
     brightRT.setSize(bw, bh); blurA.setSize(bw, bh); blurB.setSize(bw, bh);
     blur.texel.set(1 / bw, 1 / bh);
   }
@@ -357,7 +358,7 @@ export function createScene(canvas, G) {
       }
     }
 
-    // --- render: scene -> HDR (supersampled) -> bloom -> grade -> screen ---
+    // --- render: scene -> HDR (MSAA) -> bloom -> grade -> screen ---
     renderer.setRenderTarget(rt);
     renderer.render(scene, camera);
     // bloom: extract highlights, then two widening separable-gaussian iterations
@@ -735,6 +736,7 @@ function makeTarget(w, h, opts = {}) {
   return new THREE.WebGLRenderTarget(w, h, {
     type: THREE.HalfFloatType, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
     colorSpace: THREE.NoColorSpace, depthBuffer: opts.depth !== false,
+    samples: opts.samples || 0,
   });
 }
 
@@ -745,7 +747,7 @@ function makePost() {
     uniforms: {
       uScene: { value: null },
       uBloom: { value: null },
-      uRes: { value: new THREE.Vector2(1, 1) },       // scene RT size (supersampled)
+      uRes: { value: new THREE.Vector2(1, 1) },       // scene RT size
       uExposure: { value: 1.7 },
       uLens: { value: 0.06 },             // droste used 0.05; 0 = off. radial barrel strength
       uOverscan: { value: OVERSCAN },
@@ -767,12 +769,7 @@ function makePost() {
         vec2 uvd = uv / uOverscan + lens;
         vec2 sp  = vec2(uvd.x, uvd.y * aspect);     // undo aspect
         vec2 suv = clamp(sp * 0.5 + 0.5, 0.0, 1.0);
-        // supersample: box-average the SSxSS block (the scene RT is rendered SS x larger)
-        vec2 tx = 1.0 / uRes;
-        vec3 c = ( texture2D(uScene, suv + vec2( 0.5, 0.5) * tx).rgb
-                 + texture2D(uScene, suv + vec2(-0.5, 0.5) * tx).rgb
-                 + texture2D(uScene, suv + vec2( 0.5,-0.5) * tx).rgb
-                 + texture2D(uScene, suv + vec2(-0.5,-0.5) * tx).rgb ) * 0.25;
+        vec3 c = texture2D(uScene, suv).rgb;   // geometry AA already resolved by the MSAA target
         c += texture2D(uBloom, suv).rgb * uBloom_k;   // add the blurred highlights = glow
         // exponential tonemap (droste): 1 - exp(-exposure * c) + tiny linear toe
         c = vec3(1.0) - exp(-uExposure * c) + 0.012 * c;
