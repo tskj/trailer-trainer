@@ -537,7 +537,7 @@ import { createScene } from './render3d.js';
     levelIdx=i; level=LEVELS[i];
     const s=level.start;
     st={x:s.x,y:s.y,theta:s.th,phi:s.th,delta:0,v:0,vlat:0,omega:0,omegaT:0,FyT:0,
-        _hFx:0,_hFy:0,_pVhx:null,_pVhy:null,
+        _hFx:0,_hFy:0,_pVhx:null,_pVhy:null,_fg:0,
         pitch:0,pitchV:0,roll:0,rollV:0,trRoll:0,trRollV:0};
     const pb = level.perturb ?? PERTURB;
     if(pb>0){ const sgn=Math.random()<0.5?-1:1; st.phi = s.th + sgn*(pb + Math.random()*PERTURB_RAND); }
@@ -777,8 +777,15 @@ import { createScene } from './render3d.js';
     // trailer: cornering lean only (its pitch is geometric — derived from the hitch in the renderer)
     [st.trRoll,  st.trRollV ] = spring(st.trRoll,  st.trRollV,  clamp(-aLatT *TR_ROLL_GAIN,  -TR_ROLL_MAX,  TR_ROLL_MAX ), TR_SUS_K, TR_SUS_D);
 
-    // jackknife -> game over: folding past the trigger angle ends the run (rewind)
-    if(Math.abs(norm(st.theta - st.phi)) >= JACK_TRIGGER){ triggerDead("jackknife"); return; }
+    // jackknife -> game over: folding past the trigger angle ends the run (rewind) —
+    // EXCEPT folds that happen at drift speed: those ride the MAX_ARTIC clamp as a
+    // spin-out you drive away from, and the grace flag holds until the rig has actually
+    // unfolded (so scrubbing to a stop mid-spin can't re-arm the kill mid-fold).
+    // Reverse folding never sets the grace (v < gate), so backing keeps its jackknife.
+    const artic = Math.abs(norm(st.theta - st.phi));
+    if(artic >= JACK_TRIGGER && st.v >= TR_SLIDE_LO) st._fg = 1;
+    else if(artic < JACK_TRIGGER*0.75) st._fg = 0;
+    if(artic >= JACK_TRIGGER && !st._fg){ triggerDead("jackknife"); return; }
 
     // highscore tracking: rear-axle distance (integral of |v|), and time from first motion until cleared
     if(level.id!=="free" && !levelDone){
