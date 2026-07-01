@@ -238,6 +238,7 @@ export function createScene(canvas, G) {
   function clearSkids() { skidVerts = []; for (const k in skidLast) skidLast[k] = null; const old=skidMesh.geometry; skidMesh.geometry=new THREE.BufferGeometry(); old.dispose(); }
 
   let bay = null;   // { group, fillMat, border }
+  let lastWob = 0;  // wall-clock of the previous cargo-wobble tick
   const WHITE = new THREE.Color(1, 1, 1);
 
   // ------------------------------------------------------------------ API
@@ -327,6 +328,23 @@ export function createScene(canvas, G) {
     trailer.group.rotation.y = -pose.phi;
     const trPitch = Math.asin(clamp((H.y - ty) / G.draw_d, -0.5, 0.5));
     trailer.tilt.rotation.set(pose.trRoll || 0, 0, trPitch);
+
+    // --- cargo wobble: each piece is a damped oscillator (semi-implicit Euler, real
+    //     dt clamped for stability) chasing an exaggerated copy of the trailer's own
+    //     sprung lean/pitch. Because trRoll is itself a spring response, the pile sways
+    //     AFTER the trailer moves and settles late — plus a faint speed shimmy so the
+    //     load vibrates at pace. Cosmetic only; each piece tips about its base pivot. ---
+    const nowW = performance.now(), wdt = Math.min((nowW - (lastWob || nowW)) / 1000, 1 / 30);
+    lastWob = nowW;
+    const rollDrive = (pose.trRoll || 0) * 3.0, pitchDrive = (trPitch + (pose.pitch || 0)) * 1.6;
+    const shim = Math.min(1, Math.abs(pose.v || 0) / 600) * 0.01, wT = nowW / 1000;
+    for (const w of trailer.wobblers) {
+      const tx = clamp(rollDrive * w.gain + shim * Math.sin(wT * (16 + w.w0 * 1.5) + w.ph), -w.max, w.max);
+      const tz = clamp(pitchDrive * w.gain, -w.max, w.max);
+      w.vx += (w.w0 * w.w0 * (tx - w.thx) - 2 * w.zeta * w.w0 * w.vx) * wdt; w.thx += w.vx * wdt;
+      w.vz += (w.w0 * w.w0 * (tz - w.thz) - 2 * w.zeta * w.w0 * w.vz) * wdt; w.thz += w.vz * wdt;
+      w.p.rotation.x = clamp(w.thx, -0.4, 0.4); w.p.rotation.z = clamp(w.thz, -0.4, 0.4);
+    }
 
     // --- camera ---
     const vs = viewScale * (window.__camZoom || 1);   // __camZoom: debug dolly for screenshot scripts
@@ -520,6 +538,12 @@ function buildCar(G) {
   // chrome bumpers
   inner.add(boxMesh(chromeMat, 3.5, 4.5, wid * 0.9, frontX - 1.4, 5.6, 0));
   inner.add(boxMesh(chromeMat, 3.5, 4.5, wid * 0.9, rearX + 1.4, 5.6, 0));
+  // tow hitch: a steel drawbar reaching back from under the rear bumper to a chrome
+  // ball at the exact coupling point the physics pins (-hitchC, couplingY)
+  const hitchBarMat = mat(COL.tongue, { r: 0.6, m: 0.3, flat: false });
+  inner.add(boxMesh(hitchBarMat, 10, 2.4, 3.4, -G.hitchC + 4.5, couplingY - 2.6, 0));
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(1.7, 10, 8), chromeMat);
+  ball.position.set(-G.hitchC, couplingY + 0.6, 0); ball.castShadow = true; inner.add(ball);
   // wing mirrors at the A-pillar
   for (const sz of [-1, 1]) inner.add(boxMesh(trimMat, 1.5, 2.4, 3, 23, bodyTop + 3, sz * (wid / 2 - 1)));
   // roof duffel, cinched with the same orange straps as the trailer load: bars over
@@ -581,34 +605,56 @@ function buildTrailer(G) {
   frontRail.position.set(ctr - len / 2 + railT / 2, topY + (railH + 3) / 2, 0);
   frontRail.castShadow = true; inner.add(frontRail);
 
-  // A-frame tongue from the deck to the hitch (x=0)
+  // A-frame tongue from the deck to the hitch (x=0), with a coupler socket at the
+  // tip that swallows the car's tow ball (the physics glues the tip to that point)
   const tongue = new THREE.Mesh(new THREE.BoxGeometry(G.boxFront, 3.5, 4), tongueMat);
   tongue.position.set(-G.boxFront / 2, deckY - 1, 0); tongue.castShadow = true; inner.add(tongue);
+  inner.add(boxMesh(tongueMat, 4.5, 3.4, 5, -2, couplingY - 1, 0));
 
   // ---- cargo: a moving-day tower — mismatched junk stacked comedically high in
   //      three tapering tiers, cinched down by two bright-orange ratchet straps.
   //      The plant and the top box poke up past the straps; the rug overhangs. ----
-  // tier 1 — heavy stuff fills the bed
-  inner.add(boxMesh(mat(COL.crateA), 28, 15, 23, ctr - 17, topY, -1, 0.05));    // big amber crate
-  inner.add(boxMesh(mat(COL.plank),  24, 12, 22, ctr + 11, topY,  1, -0.06));   // wooden crate
+  // Every piece sits in a pivot group at its contact patch and carries its own tiny
+  // damped-oscillator state (integrated per frame in update()), so the pile sways,
+  // lags and settles piece-by-piece instead of moving as one rigid lump. gain scales
+  // the drive, w0/zeta shape the oscillator, max caps the lean (strapped = tight).
+  // Parameters get a per-item random jitter so nothing moves in lockstep.
+  const wobblers = [];
+  const wob = (mesh, baseY, gain, w0, zeta, max) => {
+    const p = new THREE.Group();
+    p.position.set(mesh.position.x, baseY, mesh.position.z);
+    mesh.position.set(0, mesh.position.y - baseY, 0);
+    p.add(mesh); inner.add(p);
+    const j = (v, s) => v * (1 - s + Math.random() * 2 * s);
+    wobblers.push({ p, thx: 0, vx: 0, thz: 0, vz: 0, gain: j(gain, 0.25), w0: j(w0, 0.2), zeta: j(zeta, 0.2), max, ph: Math.random() * Math.PI * 2 });
+  };
+  // tier 1 — heavy stuff fills the bed (strapped tight: barely moves)
+  wob(boxMesh(mat(COL.crateA), 28, 15, 23, ctr - 17, topY, -1, 0.05), topY, 0.35, 13, 0.5, 0.035);   // big amber crate
+  wob(boxMesh(mat(COL.plank),  24, 12, 22, ctr + 11, topY,  1, -0.06), topY, 0.35, 14, 0.5, 0.035);  // wooden crate
   const barrel = new THREE.Mesh(new THREE.CylinderGeometry(6, 6, 13, 10), mat(COL.barrel));
-  barrel.position.set(ctr + 29, topY + 6.5, 6); barrel.castShadow = barrel.receiveShadow = true; inner.add(barrel);
-  // tier 2 — the washing machine and the teal crate
-  inner.add(boxMesh(mat(COL.washer), 15, 14, 15, ctr - 17, topY + 15, 1, 0.1));
-  inner.add(boxMesh(mat(COL.crateB), 14, 10, 14, ctr + 10, topY + 12, -3, -0.15));
-  // tier 3 — light junk perched on top
-  inner.add(boxMesh(mat(COL.suitcase), 13, 4.5, 10, ctr + 10, topY + 22, 2, 0.22));  // suitcase on the teal crate
-  inner.add(boxMesh(mat(COL.crateA),    9, 7.5,  9, ctr - 19, topY + 29, -4, -0.28)); // little box atop the washer
+  barrel.position.set(ctr + 29, topY + 6.5, 6); barrel.castShadow = barrel.receiveShadow = true;
+  wob(barrel, topY, 0.7, 9, 0.3, 0.09);                                                              // loose barrel
+  // tier 2 — the washing machine and the teal crate (strapped)
+  wob(boxMesh(mat(COL.washer), 15, 14, 15, ctr - 17, topY + 15, 1, 0.1),   topY + 15, 0.55, 11, 0.4, 0.04);
+  wob(boxMesh(mat(COL.crateB), 14, 10, 14, ctr + 10, topY + 12, -3, -0.15), topY + 12, 0.55, 11, 0.4, 0.04);
+  // tier 3 — light junk perched on top (unstrapped: this is where the drama lives)
+  wob(boxMesh(mat(COL.suitcase), 13, 4.5, 10, ctr + 10, topY + 22, 2, 0.22),  topY + 22, 0.95, 8.5, 0.25, 0.14);
+  wob(boxMesh(mat(COL.crateA),    9, 7.5,  9, ctr - 19, topY + 29, -4, -0.28), topY + 29, 1.1, 9, 0.22, 0.16);
   // rolled rug lying across the pile, overhanging both ends, pitched onto its perches
   const rugGeo = new THREE.CylinderGeometry(2.9, 2.9, 31, 9); rugGeo.rotateZ(Math.PI / 2);
   const rug = new THREE.Mesh(rugGeo, mat(COL.rug));
   rug.position.set(ctr - 4, topY + 32, 8); rug.rotation.z = -0.12; rug.rotation.y = 0.06;
-  rug.castShadow = rug.receiveShadow = true; inner.add(rug);
-  // potted plant riding the suitcase (unstrapped, of course)
+  rug.castShadow = rug.receiveShadow = true;
+  wob(rug, topY + 29, 0.75, 7, 0.3, 0.1);
+  // potted plant riding the suitcase (unstrapped, of course): the comedy lead —
+  // lowest damping, biggest lever, does big lazy swings
+  const plantG = new THREE.Group();
   const pot = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 2, 4, 8), mat(COL.pot));
-  pot.position.set(ctr + 17, topY + 28.5, 6); pot.castShadow = true; inner.add(pot);
+  pot.position.y = 2; pot.castShadow = true;
   const plant = new THREE.Mesh(new THREE.IcosahedronGeometry(4.2, 0), mat(COL.plant));
-  plant.position.set(ctr + 17, topY + 34, 6); plant.castShadow = true; inner.add(plant);
+  plant.position.y = 7.5; plant.castShadow = true;
+  plantG.add(pot, plant); plantG.position.set(ctr + 17, topY + 26.5, 6);
+  wob(plantG, topY + 26.5, 1.4, 6.5, 0.12, 0.22);
 
   // orange ratchet straps over the pile: a bar pressed into each tier-2 top, sides
   // pulled taut down-and-out to hook the rail tops — they graze the tier-1 crate
@@ -627,7 +673,7 @@ function buildTrailer(G) {
     const w = new THREE.Mesh(wheelGeo, wheelMat); w.rotation.x = Math.PI / 2;
     w.position.set(-G.draw_d, wheelR, z); w.castShadow = true; inner.add(w);
   }
-  return { group, tilt };
+  return { group, tilt, wobblers };
 }
 
 function buildBay(b, dims, parent) {

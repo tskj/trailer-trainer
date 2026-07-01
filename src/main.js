@@ -750,7 +750,7 @@ import { createScene } from './render3d.js';
     // hand the interpolated pose + view state to the 3D renderer
     bayGlowCur += (bayFitGlow() - bayGlowCur) * 0.12;     // ease, then interpolate the glow colour in OKLab
     R.update(
-      {x:rs.x, y:rs.y, theta:rs.theta, phi:rs.phi, delta:rs.delta,
+      {x:rs.x, y:rs.y, theta:rs.theta, phi:rs.phi, delta:rs.delta, v:rs.v,
        pitch:rs.pitch, roll:rs.roll, trRoll:rs.trRoll},
       {camX:cam.x, camY:cam.y, camRot, camLook, rotateFollow, bayColor:bayColorAt(bayGlowCur), bayEdge:bayEdgeAt(bayGlowCur), trails, trailsOn, dead}
     );
