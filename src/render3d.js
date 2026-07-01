@@ -442,6 +442,22 @@ function boxMesh(material, sx, sy, sz, x, y, z, rotY = 0) {
   m.castShadow = true; m.receiveShadow = true;
   return m;
 }
+// taut tie-down strap at longitudinal position x: a bar pressed into the load top
+// (half-width topHW), with the two sides sloping down-and-OUT to anchor points that
+// sit wider and lower (ancHW at ancY) — the tensioned trapezoid of a real ratchet
+// strap, instead of a rectangular hoop.
+function strapRun(parent, mtl, x, loadTop, topHW, ancY, ancHW, z0 = 0, w = 2.4, t = 1.6) {
+  parent.add(boxMesh(mtl, w, t, topHW * 2 + 1.2, x, loadTop - 0.4, z0));
+  const yTop = loadTop + 0.6, dy = yTop - ancY, dz = ancHW - topHW;
+  const L = Math.hypot(dy, dz) + 1.6;                 // a little long, so ends tuck into bar/anchor
+  for (const sz of [-1, 1]) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, L, t), mtl);
+    m.position.set(x, (yTop + ancY) / 2, z0 + sz * (topHW + ancHW) / 2);
+    m.rotation.x = -sz * Math.atan2(dz, dy);
+    m.castShadow = m.receiveShadow = true;
+    parent.add(m);
+  }
+}
 
 function buildCar(G) {
   // Boxy low-poly tow wagon (Crossy-Road / toy-car massing): a long coral body
@@ -506,9 +522,10 @@ function buildCar(G) {
   inner.add(boxMesh(chromeMat, 3.5, 4.5, wid * 0.9, rearX + 1.4, 5.6, 0));
   // wing mirrors at the A-pillar
   for (const sz of [-1, 1]) inner.add(boxMesh(trimMat, 1.5, 2.4, 3, 23, bodyTop + 3, sz * (wid / 2 - 1)));
-  // roof duffel, cinched with the same orange straps as the trailer load
+  // roof duffel, cinched with the same orange straps as the trailer load: bars over
+  // the bag, sides sloping out to the roof edges
   inner.add(boxMesh(duffelMat, 12, 5, 10, 6, bodyTop + 10.4, 0.4, 0.06));
-  for (const sx of [2.5, 9.5]) inner.add(boxMesh(strapMat, 1.6, 5.6, 10.8, sx, bodyTop + 10.2, 0.4, 0.06));
+  for (const sx of [2.5, 9.5]) strapRun(inner, strapMat, sx, bodyTop + 15.4, 5.4, bodyTop + 10.6, 9.8, 0.4, 1.6, 1.4);
 
   // chunky wheels at the axles (front pair steers)
   const wheelGeo = new THREE.CylinderGeometry(wheelR, wheelR, G.wheelW + 4, 14);
@@ -593,14 +610,11 @@ function buildTrailer(G) {
   const plant = new THREE.Mesh(new THREE.IcosahedronGeometry(4.2, 0), mat(COL.plant));
   plant.position.set(ctr + 17, topY + 34, 6); plant.castShadow = true; inner.add(plant);
 
-  // orange ratchet straps over the pile: a top bar pressed into each tier-2 top,
-  // with side runs dropping to the deck edge
-  const strap = (x, topAt) => {
-    inner.add(boxMesh(strapMat, 2.4, 1.6, wid + 3, x, topAt - 0.4, 0));
-    for (const sz of [-1, 1]) inner.add(boxMesh(strapMat, 2.4, topAt - topY - 1, 1.6, x, topY + 1, sz * (wid / 2 + 0.7)));
-  };
-  strap(ctr - 11, topY + 29);   // over the washing machine
-  strap(ctr + 12, topY + 22);   // over the teal crate (the suitcase perches on it)
+  // orange ratchet straps over the pile: a bar pressed into each tier-2 top, sides
+  // pulled taut down-and-out to hook the rail tops — they graze the tier-1 crate
+  // corners on the way, so the whole stack reads as cinched together
+  strapRun(inner, strapMat, ctr - 11, topY + 29, 8, topY + 4.2, 15.3);   // over the washing machine
+  strapRun(inner, strapMat, ctr + 12, topY + 22, 8, topY + 4.2, 15.3);   // over the teal crate (the suitcase perches on it)
 
   // rear reflectors on the deck corners
   for (const z of [-wid * 0.34, wid * 0.34]) {
