@@ -67,6 +67,13 @@
   .intro .lrec b{color:var(--ink);font-weight:600}
   body.touch .intro{top:56px}
 
+  /* pre-run countdown: hold acc/rev through it and you launch the instant it hits zero */
+  .count{position:absolute;left:50%;top:38%;transform:translate(-50%,-50%);z-index:6;pointer-events:none;
+         font-family:var(--mono);font-size:96px;font-weight:700;color:var(--marking);display:none;
+         text-shadow:0 0 34px rgba(242,196,77,.45);font-variant-numeric:tabular-nums}
+  .count.show{display:block;animation:countpop .5s ease-out infinite}
+  @keyframes countpop{0%{opacity:1;transform:translate(-50%,-50%) scale(1.12)}70%{opacity:.92;transform:translate(-50%,-50%) scale(1)}100%{opacity:.85;transform:translate(-50%,-50%) scale(.97)}}
+
   /* red border flash + game-over overlay */
   .ring{position:absolute;inset:0;pointer-events:none;box-shadow:inset 0 0 0 0 transparent;transition:box-shadow .12s;z-index:6}
   .ring.on{box-shadow:inset 0 0 0 3px rgba(255,90,82,.55), inset 0 0 34px rgba(255,90,82,.26)}
@@ -141,7 +148,8 @@
   .lv-row.sel{background:rgba(242,196,77,.08)}
   .lv-row .n{color:var(--ink-dim)}
   .lv-row .pb{color:var(--cyan);font-size:10.5px;font-variant-numeric:tabular-nums}
-  .lv-row .wr{color:var(--marking);font-size:10.5px;font-variant-numeric:tabular-nums}
+  .lv-row .wr{color:var(--marking);font-size:10.5px;font-variant-numeric:tabular-nums;text-align:right}
+  .lv-row .wr .wrd{color:var(--amber);opacity:.85}
   .lv-foot{margin-top:12px;text-align:center}
 
   button{font-family:var(--mono);font-size:11px;letter-spacing:.04em;padding:8px 12px;border-radius:16px;
@@ -240,6 +248,8 @@
     <button id="mobRetry" title="restart run">↺</button>
     <button id="mobLevels" title="levels">≡</button>
   </div>
+
+  <div class="count" id="count"></div>
 
   <div class="ring" id="ring"></div>
   <div class="dead" id="dead">

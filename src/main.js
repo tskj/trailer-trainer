@@ -39,6 +39,11 @@ const trails={front:[],rear:[],trailer:[]}; let trailsOn=false;
 const TRAIL_MAX=700, TRAIL_MIN=3;
 let nameGateOpen=false, lvselOpen=false, resultsOpen=false, lvSelIdx=1;
 let summaryCache=null, summaryAt=0;
+// pre-run countdown (client-side only — the sim and the recorded run start at
+// tick 0 when it expires, so replays/leaderboards are untouched). Holding
+// acc/rev/steer through it is legal: those inputs simply apply from tick 0.
+const COUNTDOWN = 1.5;
+let countT = 0;
 
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const s=ms/1000; return s<60 ? s.toFixed(2)+'s'
@@ -89,6 +94,8 @@ function loadLevel(i, forcedSeed){
   R.buildLevel(level, level.bay ? {hl:level.bay.hl, hw:level.bay.hw} : null);
   $("dead").classList.remove("show"); $("ring").classList.remove("on");
   $("results").classList.remove("show"); resultsOpen=false;
+  countT = level.id==='free' ? 0 : COUNTDOWN;
+  updateCount();
   showIntro();
 }
 const nextLevel = () => loadLevel((levelIdx+1)%LEVELS.length);
@@ -195,7 +202,12 @@ function buildLvRows(){
     pb.textContent = lv.id==='free' ? '' : (p&&p.timeMs!=null ? `PB ${fmtTime(p.timeMs)} · ${fmtDist(p.dist)}` : '');
     const wr=document.createElement('span'); wr.className='wr';
     const s=summaryCache&&summaryCache.levels&&summaryCache.levels[lv.id];
-    wr.textContent = lv.id==='free' ? '' : (s&&s.bestTime ? `WR ${fmtTime(s.bestTime.timeMs)} ${s.bestTime.name}` : '');
+    if(lv.id!=='free' && s && (s.bestTime||s.bestDist)){
+      const t=s.bestTime, d=s.bestDist;
+      const lt=document.createElement('div'); lt.textContent = t ? `${fmtTime(t.timeMs)} ${t.name}` : '';
+      const ld=document.createElement('div'); ld.className='wrd'; ld.textContent = d ? `${fmtDist(d.dist)} ${d.name}` : '';
+      wr.append(lt,ld);
+    }
     row.append(n,nm,pb,wr);
     row.onclick=()=>{ closeLvSel(); loadLevel(i); };
     box.appendChild(row);
@@ -350,10 +362,21 @@ function tickOnce(){
   if(ev.done) finishRun();
 }
 
+function updateCount(){
+  const el=$("count");
+  if(countT>0){ el.textContent = Math.ceil(countT/(COUNTDOWN/3)); el.classList.add("show"); }
+  else el.classList.remove("show");
+}
+
 let prevState=null, currState=null, acc=0, last=performance.now();
 function frame(now){
   let dt=(now-last)/1000; last=now;
   dt=Math.min(dt,0.25);
+  if(!(nameGateOpen||lvselOpen) && countT>0){
+    countT-=dt; updateCount();
+    if(countT>0) dt=0;                       // world idles; held inputs arm for tick 0
+    else { dt=-countT; countT=0; }           // spend only the overshoot into the run
+  }
   if(!(nameGateOpen||lvselOpen)){
     acc+=dt;
     let steps=0;
@@ -513,6 +536,7 @@ window.__run = () => ({ seed, level: level.id, ticks: rows.length, done: sim.don
 // e2e: reload current level with a forced seed and feed a packed input log as if typed
 window.__feed = (forcedSeed, packed) => {
   loadLevel(levelIdx, forcedSeed);
+  countT = 0; updateCount();
   fadeIntro();
   feedQ = [];
   for(const p of packed){ for(let i=0;i<p[0];i++) feedQ.push([p[1],p[2],p[3],p[4]]); }
