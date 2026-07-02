@@ -19,6 +19,13 @@ export async function fetchSummary(name){
   }catch(e){ return null; }
 }
 
+// one stored run's full payload (seed + packed ticks) for watch-a-replay
+export async function fetchReplay(id){
+  try{
+    return await J(await fetch(`/api/replay?id=${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(10000) }));
+  }catch(e){ return null; }
+}
+
 export async function submitRun(payload){
   try{
     const r = await fetch('/api/runs', {

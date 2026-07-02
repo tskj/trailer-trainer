@@ -43,16 +43,17 @@ app.use(express.json({ limit: '3mb' }));
 const MAX_TICKS = 72000;          // 10 minutes of run
 const BOARD_N = 10;
 
-// best run per name, ranked by one metric
+// best run per name, ranked by one metric. Rows carry the run id so clients
+// can fetch that exact run's input log from /api/replay and watch it.
 async function board(level, metric){
   const col = metric === 'time' ? 'time_ms' : 'dist';
   const { rows } = await pool.query(
-    `SELECT name, time_ms AS "timeMs", dist FROM (
-       SELECT DISTINCT ON (name) name, time_ms, dist FROM runs
+    `SELECT id, name, time_ms AS "timeMs", dist FROM (
+       SELECT DISTINCT ON (name) id, name, time_ms, dist FROM runs
        WHERE level=$1 AND sim_version=$2 ORDER BY name, ${col} ASC, created_at ASC
      ) b ORDER BY "${col === 'time_ms' ? 'timeMs' : 'dist'}" ASC LIMIT ${BOARD_N}`,
     [level, SIM_VERSION]);
-  return rows.map((r, i) => ({ rank: i + 1, ...r }));
+  return rows.map((r, i) => ({ rank: i + 1, ...r, id: Number(r.id) }));
 }
 async function rankOf(level, metric, value){
   const col = metric === 'time' ? 'time_ms' : 'dist';
@@ -107,6 +108,23 @@ app.get('/api/summary', async (_req, res) => {
     for(const r of drows) (levels[r.level] ??= {}).bestDist = { name: r.name, dist: Number(r.dist) };
     res.json({ levels });
   }catch(e){ console.error('summary:', e.message); res.status(500).json({ error: 'db' }); }
+});
+
+// one stored run, input log included — everything a client needs to
+// re-simulate and watch it (level, seed, packed ticks). Current-sim-version
+// only: an old log fed to a newer sim would silently desync.
+app.get('/api/replay', async (req, res) => {
+  const id = Number(req.query.id || '');
+  if(!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'bad id' });
+  try{
+    const { rows } = await pool.query(
+      `SELECT id, level, name, seed, time_ms AS "timeMs", dist, ticks FROM runs
+       WHERE id=$1 AND sim_version=$2`, [id, SIM_VERSION]);
+    if(!rows.length) return res.status(404).json({ error: 'not found' });
+    const r = rows[0];
+    res.json({ id: Number(r.id), level: r.level, name: r.name, seed: Number(r.seed),
+               timeMs: r.timeMs, dist: r.dist, ticks: r.ticks });
+  }catch(e){ console.error('replay:', e.message); res.status(500).json({ error: 'db' }); }
 });
 
 const bad = (res, reason) => res.status(422).json({ ok: false, reason });

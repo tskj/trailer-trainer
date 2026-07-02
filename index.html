@@ -46,6 +46,9 @@
   .runhud .t{color:var(--ink);font-size:19px}
   .runhud .d{color:var(--marking)}
   .runhud .u{color:var(--ink-dim);font-size:10px;letter-spacing:.1em}
+  .runhud .w{color:var(--cyan);font-size:12px;letter-spacing:.1em;white-space:nowrap}
+  .runhud .g{color:var(--cyan);font-size:12px;letter-spacing:.1em;white-space:nowrap;opacity:.85}
+  #ghostBtn.on{border-color:var(--cyan);color:var(--cyan)}
   body.touch .runhud{bottom:auto;top:12px;font-size:13px}
   body.touch .runhud .t{font-size:15px}
   body.touch .steerbar{display:none}
@@ -103,12 +106,18 @@
   .board-h{font-family:var(--mono);color:var(--ink-dim);letter-spacing:.14em;text-transform:uppercase;font-size:9.5px;
            margin-bottom:5px;border-bottom:1px solid var(--line);padding-bottom:4px}
   .board-rows{display:flex;flex-direction:column;gap:2px;font-family:var(--mono);font-size:11.5px}
-  .brow{display:grid;grid-template-columns:20px 1fr auto;align-items:baseline;gap:7px;padding:1px 4px;border-radius:8px}
+  .brow{display:grid;grid-template-columns:20px 1fr auto auto;align-items:baseline;gap:7px;padding:1px 4px;border-radius:8px}
   .brow .br-rank{color:var(--ink-dim)}
   .brow .br-name{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .brow .br-val{color:var(--marking);font-variant-numeric:tabular-nums}
   .brow.mine{background:rgba(86,217,138,.1)}
   .brow.mine .br-name{color:var(--good)}
+  .brow .br-play{color:var(--ink-dim);font-size:9px;opacity:.5}
+  .brow.watch{cursor:pointer}
+  .brow.watch:hover{background:rgba(57,194,215,.12)}
+  .brow.watch:hover .br-name{color:var(--cyan)}
+  .brow.watch:hover .br-play{color:var(--cyan);opacity:1}
+  .brow.mine.watch:hover{background:rgba(86,217,138,.18)}
   .board-empty{color:var(--ink-dim);opacity:.6;font-size:11px}
   .res-foot{display:flex;justify-content:center;gap:16px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:11px}
   .tapbtns{display:none;gap:10px;justify-content:center;margin-top:10px}
@@ -135,7 +144,17 @@
   .lvsel{position:absolute;inset:0;display:none;align-items:center;justify-content:center;z-index:9;
          background:rgba(12,14,17,.6)}
   .lvsel.show{display:flex}
-  .lv-card{width:min(660px,94vw);max-height:90vh;overflow-y:auto;padding:18px 22px 14px}
+  .lv-card{width:min(940px,94vw);max-height:90vh;overflow-y:auto;padding:18px 22px 14px}
+  .lv-body{display:grid;grid-template-columns:1.05fr .95fr;gap:18px;align-items:start}
+  .lv-board{border-left:1px solid var(--line);padding-left:18px;min-height:230px}
+  .lvb-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px}
+  .lvb-name{font-family:var(--mono);font-size:12px;letter-spacing:.14em;color:var(--marking);text-transform:uppercase;
+            overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .lvb-hint{margin-top:2px;min-height:14px}
+  @media (max-width:720px){
+    .lv-body{grid-template-columns:1fr}
+    .lv-board{border-left:none;padding-left:0;border-top:1px solid var(--line);padding-top:12px;min-height:0}
+  }
   .lv-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:10px;flex-wrap:wrap}
   .lv-title{font-family:var(--mono);font-size:12px;letter-spacing:.22em;color:var(--marking);text-transform:uppercase}
   .lv-name{font-family:var(--mono);font-size:11px;color:var(--ink-dim)}
@@ -151,6 +170,13 @@
   .lv-row .wr{color:var(--marking);font-size:10.5px;font-variant-numeric:tabular-nums;text-align:right}
   .lv-row .wr .wrd{color:var(--amber);opacity:.85}
   .lv-foot{margin-top:12px;text-align:center}
+
+  /* watch-a-replay: finished card + spectate affordances */
+  .res-clear.we{color:var(--cyan);text-shadow:0 0 22px rgba(57,194,215,.4)}
+  .we-name{font-family:var(--mono);font-size:13px;color:var(--ink);letter-spacing:.08em;margin-top:8px}
+  .we-btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin:6px 0 14px}
+  .we-btns button{font-size:12.5px;padding:9px 16px}
+  body.touch.watching .touchSteer,body.touch.watching .touchThrottle,body.touch.watching .touchBrake{display:none}
 
   button{font-family:var(--mono);font-size:11px;letter-spacing:.04em;padding:8px 12px;border-radius:16px;
          corner-shape:superellipse(3);cursor:pointer;background:var(--asphalt);color:var(--ink);
@@ -217,6 +243,8 @@
   </div>
 
   <div class="runhud" id="runHud">
+    <span class="w" id="hudWatch" style="display:none"></span>
+    <span class="g" id="hudGhost" style="display:none"></span>
     <span class="t" id="hudTime">0.0</span><span class="u">SEC</span>
     <span class="d" id="hudDist">0</span><span class="u">DIST</span>
   </div>
@@ -283,16 +311,51 @@
     </div>
   </div>
 
+  <div class="results" id="watchEnd">
+    <div class="res-card card">
+      <div class="res-clear we">Replay finished</div>
+      <div class="we-name" id="weName"></div>
+      <div class="res-nums">
+        <div class="res-num"><div class="v" id="weTime">0.0s</div><div class="k">time</div></div>
+        <div class="res-num"><div class="v" id="weDist">0</div><div class="k">distance</div></div>
+      </div>
+      <div class="we-btns">
+        <button id="weRewatch">▶ Rewatch</button>
+        <button class="primary" id="weDrive">Drive it yourself</button>
+        <button id="weLevels">Levels</button>
+      </div>
+      <div class="res-foot keysline deskonly">
+        <span><span class="kbd">R</span> rewatch</span>
+        <span><span class="kbd">Space</span> drive</span>
+        <span><span class="kbd">Tab</span> levels</span>
+      </div>
+    </div>
+  </div>
+
   <div class="lvsel" id="lvsel">
     <div class="lv-card card">
       <div class="lv-head">
         <span class="lv-title">Levels</span>
+        <button id="ghostBtn" title="race the level's WR as a ghost (G)">ghost: off</button>
         <span class="lv-name">driving as <b id="lvName" title="click to change name">?</b></span>
       </div>
-      <div class="lv-rows" id="lvRows"></div>
+      <div class="lv-body">
+        <div class="lv-rows" id="lvRows"></div>
+        <div class="lv-board">
+          <div class="lvb-head">
+            <span class="lvb-name" id="lvbName"></span>
+            <button class="primary" id="lvDrive">Drive →</button>
+          </div>
+          <div class="res-boards">
+            <div><div class="board-h">Fastest</div><div class="board-rows" id="lvBoardTime"></div></div>
+            <div><div class="board-h">Shortest</div><div class="board-rows" id="lvBoardDist"></div></div>
+          </div>
+          <div class="lvb-hint keysline" id="lvbHint"></div>
+        </div>
+      </div>
       <div class="lv-foot keysline">
-        <span class="kbd">1–9</span> jump · <span class="kbd">↑↓</span> + <span class="kbd">Enter</span> pick · <span class="kbd">Esc</span> close ·
-        <span class="kbd">C</span> camera · <span class="kbd">T</span> trails · <span class="kbd">Shift</span> handbrake
+        <div><span class="kbd">1–9</span> jump · <span class="kbd">↑↓</span> pick · <span class="kbd">Enter</span> drive · <span class="kbd">Esc</span> close</div>
+        <div style="margin-top:3px"><span class="kbd">C</span> camera · <span class="kbd">T</span> trails · <span class="kbd">G</span> ghost · <span class="kbd">Shift</span> handbrake</div>
       </div>
     </div>
   </div>

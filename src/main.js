@@ -7,7 +7,7 @@ import { createSim, TICK, SIM_VERSION, MAX_STEER, G, JACK_TRIGGER,
          rowFromInput, inputFromRow, packTicks, clamp, norm } from './sim.js';
 import { LEVELS } from './levels.js';
 import * as audio from './audio.js';
-import { fetchBoards, fetchSummary, submitRun } from './net.js';
+import { fetchBoards, fetchSummary, fetchReplay, submitRun } from './net.js';
 
 (() => {
 "use strict";
@@ -24,10 +24,11 @@ const STEER_FORCE=1.2, STEER_DRAG=1.6, STEER_ROLL=0.05;
 const MAX_STEPS_PER_FRAME = 8;
 
 // ---- persisted identity + local PBs ----
-const LS_NAME='tt.name', LS_PBS='tt.pbs';
+const LS_NAME='tt.name', LS_PBS='tt.pbs', LS_GHOST='tt.ghost';
 let name = null; try{ name = localStorage.getItem(LS_NAME); }catch(e){}
 let pbs = {};    try{ pbs = JSON.parse(localStorage.getItem(LS_PBS)||'{}'); }catch(e){}
 function savePbs(){ try{ localStorage.setItem(LS_PBS, JSON.stringify(pbs)); }catch(e){} }
+let ghostsOn = false; try{ ghostsOn = localStorage.getItem(LS_GHOST)==='1'; }catch(e){}
 
 // ---- game state ----
 let levelIdx=1, level=LEVELS[1], sim=null, seed=0;
@@ -39,6 +40,15 @@ const trails={front:[],rear:[],trailer:[]}; let trailsOn=false;
 const TRAIL_MAX=700, TRAIL_MIN=3;
 let nameGateOpen=false, lvselOpen=false, resultsOpen=false, lvSelIdx=1;
 let summaryCache=null, summaryAt=0;
+const boardsCache={};                             // levelId -> {at, data} for the level-select pane
+// watch-a-replay (spectate a stored run): the run's ticks stream through the
+// same feedQ the e2e hook uses, so the sim plays it back bit-exact. watch is
+// null while driving; feedThr/feedBrk mirror the fed inputs for audio.
+let watch=null, watchEndOpen=false, lastReplay=null, feedThr=0, feedBrk=false;
+// ghost racing: a second sim replays the level's WR (with ITS OWN seed) one
+// tick per player tick, so both launch together when the countdown ends.
+let ghost=null;                                   // {sim, feed, i, name, prev, curr}
+const ghostCache={};                              // levelId -> replay payload (null = none/offline)
 // pre-run countdown (client-side only — the sim and the recorded run start at
 // tick 0 when it expires, so replays/leaderboards are untouched). Holding
 // acc/rev/steer through it is legal: those inputs simply apply from tick 0.
@@ -46,6 +56,7 @@ const COUNTDOWN = 1.5;
 let countT = 0;
 
 const $ = id => document.getElementById(id);
+const INTRO_KEYS_HTML = document.getElementById("introKeys").innerHTML;
 const fmtTime = ms => { const s=ms/1000; return s<60 ? s.toFixed(2)+'s'
   : `${Math.floor(s/60)}:${(s%60).toFixed(2).padStart(5,'0')}`; };
 const fmtDist = d => `${Math.round(d)}`;
@@ -94,9 +105,16 @@ function loadLevel(i, forcedSeed){
   R.buildLevel(level, level.bay ? {hl:level.bay.hl, hw:level.bay.hw} : null);
   $("dead").classList.remove("show"); $("ring").classList.remove("on");
   $("results").classList.remove("show"); resultsOpen=false;
+  watch=null; watchEndOpen=false; feedThr=0; feedBrk=false;
+  document.body.classList.remove("watching");
+  $("watchEnd").classList.remove("show");
+  $("hudWatch").style.display='none';
+  $("introKeys").innerHTML=INTRO_KEYS_HTML;
+  ghost=null; $("hudGhost").style.display='none';
   countT = level.id==='free' ? 0 : COUNTDOWN;
   updateCount();
   showIntro();
+  armGhost();
 }
 const nextLevel = () => loadLevel((levelIdx+1)%LEVELS.length);
 
@@ -109,7 +127,7 @@ function showIntro(){
   if(level.id!=='free'){
     const lid=level.id;
     fetchBoards(lid).then(b=>{
-      if(lid!==level.id || !b) return;
+      if(lid!==level.id || !b || watch) return;   // watch mode owns the intro text
       const t=b.time&&b.time[0], d=b.dist&&b.dist[0];
       rec.innerHTML = (t||d)
         ? `WR <b>${t?fmtTime(t.timeMs):'—'}</b> ${t?esc(t.name):''} · shortest <b>${d?fmtDist(d.dist):'—'}</b> ${d?esc(d.name):''}`
@@ -122,18 +140,111 @@ function fadeIntro(){ if(!introFaded){ introFaded=true; $("intro").classList.add
 const esc = s => String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 // ---------------------------------------------------------------- finish + submit
-function renderBoard(elId, list, metric){
+function renderBoard(elId, list, metric, levelId, n=8){
   const box=$(elId); box.replaceChildren();
   if(!list || !list.length){ const dv=document.createElement('div'); dv.className='board-empty';
     dv.textContent = list ? 'no entries yet' : 'no connection'; box.appendChild(dv); return; }
-  list.slice(0,8).forEach((e,i)=>{
+  list.slice(0,n).forEach((e,i)=>{
     const row=document.createElement('div'); row.className='brow'+(e.name===name?' mine':'');
     const rank=document.createElement('span'); rank.className='br-rank'; rank.textContent=e.rank??(i+1);
     const nm=document.createElement('span'); nm.className='br-name'; nm.textContent=e.name;
     const val=document.createElement('span'); val.className='br-val';
     val.textContent = metric==='time' ? fmtTime(e.timeMs) : fmtDist(e.dist);
-    row.append(rank,nm,val); box.appendChild(row);
+    row.append(rank,nm,val);
+    if(e.id && levelId){                     // click any entry -> watch that run
+      row.classList.add('watch'); row.title='watch replay';
+      const pl=document.createElement('span'); pl.className='br-play'; pl.textContent='▶';
+      row.appendChild(pl);
+      row.onclick=()=>watchEntry(e.id);
+    }
+    box.appendChild(row);
   });
+}
+
+// ------------------------------------------------------------- watch-a-replay
+async function watchEntry(runId){
+  const hint=lvselOpen ? $("lvbHint") : $("resStatus");
+  const keep=hint.innerHTML;
+  hint.textContent='fetching replay…';
+  const rep = await fetchReplay(runId);
+  if(!rep){ hint.textContent='replay unavailable — offline?'; setTimeout(()=>{ if(hint.textContent==='replay unavailable — offline?') hint.innerHTML=keep; },2500); return; }
+  startReplay(rep);
+}
+function startReplay(rep){
+  const idx = LEVELS.findIndex(l=>l.id===rep.level);
+  if(idx<0) return;
+  lastReplay = rep;
+  if(lvselOpen) closeLvSel();
+  loadLevel(idx, rep.seed);
+  watch = { name: rep.name, timeMs: rep.timeMs, dist: rep.dist };
+  recording = false;
+  ghost=null; $("hudGhost").style.display='none';   // no ghost while spectating
+  countT = 0; updateCount();
+  feedQ = [];
+  for(const p of rep.ticks){ for(let i=0;i<p[0];i++) feedQ.push([p[1],p[2],p[3],p[4]]); }
+  document.body.classList.add("watching");
+  const hw=$("hudWatch"); hw.textContent='▶ '+watch.name; hw.style.display='';
+  $("introName").textContent='▶ watching '+watch.name;
+  $("introGoal").textContent=`${level.name} — ${fmtTime(watch.timeMs)} · ${fmtDist(watch.dist)} dist`;
+  $("introRec").textContent='';
+  $("introKeys").innerHTML='<span class="deskonly"><span class="kbd">Space</span> drive it yourself · <span class="kbd">Esc</span> levels</span><span class="mobonly">↺ drive it yourself · ≡ levels</span>';
+}
+function finishWatch(){
+  if(watchEndOpen) return;
+  watchEndOpen=true;
+  audio.chime();
+  $("weName").textContent=watch.name;
+  $("weTime").textContent=fmtTime(watch.timeMs);
+  $("weDist").textContent=fmtDist(watch.dist);
+  $("watchEnd").classList.add("show");
+}
+const rewatch = () => { if(lastReplay) startReplay(lastReplay); };
+
+// ------------------------------------------------------------- ghost racing
+// Fetch the level's WR run and race its ghost. Called on every level load;
+// no-ops unless ghosts are enabled. The replay payload is cached per level so
+// the Space-grind loop never refetches.
+async function armGhost(){
+  if(!ghostsOn || watch || level.id==='free') return;
+  const lid=level.id, mySim=sim;
+  let rep = ghostCache[lid];
+  if(rep === undefined){
+    const c = boardsCache[lid];
+    const b = (c && Date.now()-c.at<30000) ? c.data : await fetchBoards(lid);
+    if(!b) return;                                 // offline — retry on next load
+    const top = b.time && b.time[0];
+    if(!(top && top.id)){ ghostCache[lid]=null; return; }   // no WR to race yet
+    rep = await fetchReplay(top.id);
+    if(!rep) return;                               // fetch hiccup — retry on next load
+    ghostCache[lid] = rep;
+  }
+  if(!rep || !ghostsOn || watch || sim!==mySim || ghost) return;   // stale by the time it arrived
+  const gsim = createSim(level, rep.seed);
+  const feed = [];
+  for(const p of rep.ticks){ for(let i=0;i<p[0];i++) feed.push([p[1],p[2],p[3],p[4]]); }
+  ghost = { sim: gsim, feed, i: 0, name: rep.name, prev: null, curr: null };
+  // if the fetch landed mid-run, fast-forward to the player's tick so the
+  // ghost is exactly where it would have been
+  for(let k=rows.length; k>0; k--) ghostTick();
+  ghost.prev = ghost.curr = ghostState();
+  const hg=$("hudGhost"); hg.textContent='vs '+ghost.name; hg.style.display='';
+}
+function ghostState(){ const s=ghost.sim.st; return {x:s.x,y:s.y,theta:s.theta,phi:s.phi,delta:s.delta,v:s.v,
+  pitch:s.pitch,roll:s.roll,trRoll:s.trRoll}; }
+function ghostTick(){
+  const g=ghost;
+  if(g.i>=g.feed.length) return;                 // log done: ghost parks at its final pose
+  const ev = g.sim.tick(inputFromRow(g.feed[g.i++]));
+  if(ev.respawned) g.snap=true;                  // ghost rewound: don't interpolate the jump
+}
+function syncGhostBtn(){ const b=$("ghostBtn");
+  b.textContent = ghostsOn ? 'ghost: on' : 'ghost: off'; b.classList.toggle('on', ghostsOn); }
+function toggleGhosts(){
+  ghostsOn=!ghostsOn;
+  try{ localStorage.setItem(LS_GHOST, ghostsOn?'1':'0'); }catch(e){}
+  syncGhostBtn();
+  if(ghostsOn) armGhost();                       // mid-run: fast-forwards to the current tick
+  else { ghost=null; $("hudGhost").style.display='none'; }
 }
 async function finishRun(){
   audio.chime();
@@ -154,12 +265,12 @@ async function finishRun(){
   const res = await submitRun({ level: level.id, name, seed, v: SIM_VERSION, ticks: packed, claim: m });
   if(res.ok){
     stat.innerHTML = `<span class="ok">✓ verified</span> · #${res.rankTime} fastest · #${res.rankDist} shortest`;
-    renderBoard("boardTime", res.boards.time, 'time');
-    renderBoard("boardDist", res.boards.dist, 'dist');
-    summaryCache=null;
+    renderBoard("boardTime", res.boards.time, 'time', level.id);
+    renderBoard("boardDist", res.boards.dist, 'dist', level.id);
+    summaryCache=null; delete boardsCache[level.id]; delete ghostCache[level.id];
   } else if(res.rejected){
     stat.innerHTML = `<span class="bad">✗ not accepted (${esc(res.reason||'verification failed')})</span>`;
-    const b = await fetchBoards(level.id); if(b){ renderBoard("boardTime",b.time,'time'); renderBoard("boardDist",b.dist,'dist'); }
+    const b = await fetchBoards(level.id); if(b){ renderBoard("boardTime",b.time,'time',level.id); renderBoard("boardDist",b.dist,'dist',level.id); }
   } else {
     stat.innerHTML = `<span class="bad">offline — run not submitted</span>`;
   }
@@ -183,7 +294,7 @@ function confirmName(){
 
 function openLvSel(){
   lvselOpen=true; lvSelIdx=levelIdx;
-  buildLvRows();
+  buildLvRows(); renderLvBoards();
   $("lvName").textContent=name||'?';
   $("lvsel").classList.add("show");
   if(!summaryCache || Date.now()-summaryAt>30000){
@@ -191,8 +302,15 @@ function openLvSel(){
   }
 }
 function closeLvSel(){ lvselOpen=false; $("lvsel").classList.remove("show"); last=performance.now(); }
+// selection drives the boards pane. Desktop: hover previews, click drives.
+// Touch (no hover): first tap selects/previews, tap again (or Drive →) drives.
+function selectLv(i){
+  if(lvSelIdx===i) return;
+  lvSelIdx=i; buildLvRows(); renderLvBoards();
+}
 function buildLvRows(){
   const box=$("lvRows"); box.replaceChildren();
+  const touch=()=>document.body.classList.contains('touch');
   LEVELS.forEach((lv,i)=>{
     const row=document.createElement('div'); row.className='lv-row'+(i===lvSelIdx?' sel':'');
     const n=document.createElement('span'); n.className='n'; n.textContent = i===0?'0':String(i);
@@ -209,8 +327,38 @@ function buildLvRows(){
       wr.append(lt,ld);
     }
     row.append(n,nm,pb,wr);
-    row.onclick=()=>{ closeLvSel(); loadLevel(i); };
+    row.onmouseenter=()=>{ if(!touch()) selectLv(i); };
+    row.onclick=()=>{
+      if(touch() && lvSelIdx!==i){
+        selectLv(i);
+        document.querySelector('.lv-board')?.scrollIntoView({block:'nearest',behavior:'smooth'});
+        return;
+      }
+      closeLvSel(); loadLevel(i);
+    };
     box.appendChild(row);
+  });
+}
+function renderLvBoards(){
+  const lv=LEVELS[lvSelIdx];
+  $("lvbName").textContent = lv.name;
+  const hint=$("lvbHint"), tBox=$("lvBoardTime"), dBox=$("lvBoardDist");
+  if(lv.id==='free'){
+    tBox.replaceChildren(); dBox.replaceChildren();
+    hint.textContent='sandbox — no leaderboards';
+    return;
+  }
+  hint.innerHTML='<span class="deskonly">click an entry to watch that run</span><span class="mobonly">tap an entry to watch that run</span>';
+  const paint=b=>{ renderBoard("lvBoardTime", b&&b.time, 'time', lv.id, 10);
+                   renderBoard("lvBoardDist", b&&b.dist, 'dist', lv.id, 10); };
+  const c=boardsCache[lv.id];
+  if(c && Date.now()-c.at<30000){ paint(c.data); return; }
+  const ph=document.createElement('div'); ph.className='board-empty'; ph.textContent='fetching…';
+  tBox.replaceChildren(ph); dBox.replaceChildren(ph.cloneNode(true));
+  const lid=lv.id;
+  fetchBoards(lid).then(b=>{
+    if(b) boardsCache[lid]={at:Date.now(),data:b};
+    if(lvselOpen && LEVELS[lvSelIdx].id===lid) paint(b);
   });
 }
 
@@ -225,20 +373,26 @@ addEventListener("keydown", e=>{
   }
   if(e.key==="Tab"){ e.preventDefault(); lvselOpen ? closeLvSel() : openLvSel(); return; }
   if(lvselOpen){
+    const sel=i=>{ selectLv(i); document.querySelector('#lvRows .lv-row.sel')?.scrollIntoView({block:'nearest'}); };
     if(e.key==="Escape"){ closeLvSel(); }
-    else if(e.key==="ArrowUp"){ lvSelIdx=(lvSelIdx+LEVELS.length-1)%LEVELS.length; buildLvRows(); e.preventDefault(); }
-    else if(e.key==="ArrowDown"){ lvSelIdx=(lvSelIdx+1)%LEVELS.length; buildLvRows(); e.preventDefault(); }
+    else if(e.key==="ArrowUp"){ sel((lvSelIdx+LEVELS.length-1)%LEVELS.length); e.preventDefault(); }
+    else if(e.key==="ArrowDown"){ sel((lvSelIdx+1)%LEVELS.length); e.preventDefault(); }
     else if(e.key==="Enter"){ const i=lvSelIdx; closeLvSel(); loadLevel(i); }
+    else if(k==="g"){ toggleGhosts(); }
     else if(/^[0-9]$/.test(k)){ const i=parseInt(k,10); if(i<LEVELS.length){ closeLvSel(); loadLevel(i); } }
     return;
   }
   audio.ensureAudio();
+  if(e.key==="Escape" && (watch||watchEndOpen)){ openLvSel(); return; }
+  if(watchEndOpen && k==="r"){ rewatch(); e.preventDefault(); return; }
   if(k===" "||k==="r"){ loadLevel(levelIdx); e.preventDefault(); return; }
-  if(e.key==="Enter"){ if(resultsOpen) nextLevel(); return; }
+  if(e.key==="Enter"){ if(resultsOpen) nextLevel(); else if(watchEndOpen) loadLevel(levelIdx); return; }
   if(k==="n"){ nextLevel(); return; }
   if(k==="l"){ openLvSel(); return; }
   if(k==="c"){ rotateFollow=!rotateFollow; if(rotateFollow&&sim) camRot=-Math.PI/2-sim.st.theta; camSnap=true; return; }
   if(k==="t"){ trailsOn=!trailsOn; return; }
+  if(k==="g"){ toggleGhosts(); return; }
+  if(k==="g"){ toggleGhosts(); return; }
   if(/^[0-9]$/.test(k)){ const i=parseInt(k,10); if(i<LEVELS.length) loadLevel(i); return; }
   if(MOVE.includes(k)){ keys.add(k); fadeIntro(); e.preventDefault(); }
 });
@@ -250,6 +404,12 @@ $("lvName").onclick=()=>{ closeLvSel(); openNameGate(name); };
 $("tapRetry").onclick=()=>loadLevel(levelIdx);
 $("tapNext").onclick=()=>nextLevel();
 $("tapLevels").onclick=()=>openLvSel();
+$("lvDrive").onclick=()=>{ const i=lvSelIdx; closeLvSel(); loadLevel(i); };
+$("ghostBtn").onclick=()=>toggleGhosts();
+syncGhostBtn();
+$("weRewatch").onclick=()=>{ audio.ensureAudio(); rewatch(); };
+$("weDrive").onclick=()=>{ audio.ensureAudio(); loadLevel(levelIdx); };
+$("weLevels").onclick=()=>openLvSel();
 $("mobRetry").onclick=()=>loadLevel(levelIdx);
 $("mobLevels").onclick=()=>{ lvselOpen ? closeLvSel() : openLvSel(); };
 $("lvsel").addEventListener("click", e=>{ if(e.target.id==="lvsel") closeLvSel(); });
@@ -340,7 +500,17 @@ function tickOnce(){
   }
   deltaCur = clamp(deltaCur, -MAX_STEER, MAX_STEER);
   let row;
-  if(feedQ && feedQ.length){ row = feedQ.shift(); deltaCur = row[0]/8192; }
+  if(feedQ && feedQ.length){
+    row = feedQ.shift(); deltaCur = row[0]/8192;
+    feedThr = row[1]/255 - row[2]/255; feedBrk = !!(row[3]&1);
+  }
+  else if(watch){
+    // log exhausted: verified runs finish on their last tick, so normally the
+    // done-tick already fired. Anything else is a desync — end the watch.
+    if(!sim.done) finishWatch();
+    row = rowFromInput(deltaCur, 0, 0, false, false);
+    feedThr=0; feedBrk=false;
+  }
   else {
     const thr = clamp((isFwd()?1:0) + Math.max(0, touchThr), 0, 1);
     const rev = clamp((isRev()?1:0) + Math.max(0,-touchThr), 0, 1);
@@ -348,6 +518,12 @@ function tickOnce(){
   }
   if(recording && !sim.done) rows.push(row);
   const ev = sim.tick(inputFromRow(row));
+  if(ghost){                      // ghost advances in lockstep with the player sim
+    ghost.prev = ghost.curr;
+    ghostTick();
+    ghost.curr = ghostState();
+    if(ghost.snap){ ghost.prev = ghost.curr; ghost.snap = false; }
+  }
   if(ev.died){
     if(ev.died==="cone") audio.clack();
     audio.buzz();
@@ -359,7 +535,7 @@ function tickOnce(){
     camSnap=true; teleported=true;
     trails.front.length=trails.rear.length=trails.trailer.length=0;
   }
-  if(ev.done) finishRun();
+  if(ev.done){ watch ? finishWatch() : finishRun(); }
 }
 
 function updateCount(){
@@ -377,7 +553,7 @@ function frame(now){
     if(countT>0) dt=0;                       // world idles; held inputs arm for tick 0
     else { dt=-countT; countT=0; }           // spend only the overshoot into the run
   }
-  if(!(nameGateOpen||lvselOpen)){
+  if(!(nameGateOpen||lvselOpen||watchEndOpen)){
     acc+=dt;
     let steps=0;
     while(acc>=TICK){
@@ -426,6 +602,8 @@ function render(prev, curr, alpha){
 
   if(trailsOn && !sim.dead){ pushTrail(trails.front,frontX,frontY); pushTrail(trails.rear,rs.x,rs.y); pushTrail(trails.trailer,trAxX,trAxY); }
 
+  R.updateGhost(ghost && ghost.curr ? lerpState(ghost.prev, ghost.curr, alpha) : null);
+
   bayGlowCur += (sim.bayGlow() - bayGlowCur) * 0.12;
   R.update(
     {x:rs.x, y:rs.y, theta:rs.theta, phi:rs.phi, delta:rs.delta, v:rs.v,
@@ -445,7 +623,7 @@ function render(prev, curr, alpha){
     {key:'tl', x:trAxX - sp*htT, y:trAxY + cp*htT, on:trailSkid},
     {key:'tr', x:trAxX + sp*htT, y:trAxY - cp*htT, on:trailSkid},
   ]);
-  const brkSk = (isBrake()||touchBrake) && spd>25 ? 0.4+Math.min(0.6, spd/300) : 0;
+  const brkSk = (watch ? feedBrk : isBrake()||touchBrake) && spd>25 ? 0.4+Math.min(0.6, spd/300) : 0;
   const latSk = fastSkid && st._ar>0.25 ? Math.min(1, (st._ar-0.25)*2.5) : 0;
   const drfSk = fastSkid && Math.abs(st.vlat)>10 ? Math.min(0.6, (Math.abs(st.vlat)-10)/60) : 0;
   const trlSk = fastSkid && st._aT>0.15 ? Math.min(0.8, st._aT*1.4) : 0;
@@ -453,7 +631,7 @@ function render(prev, curr, alpha){
 
   // goal arrow
   const ga=$("goalArrow");
-  if(level.bay && !resultsOpen){
+  if(level.bay && !resultsOpen && !watchEndOpen){
     const a=R.aim(level.bay.x, level.bay.y);
     if(a.onscreen) ga.style.display="none";
     else {
@@ -508,8 +686,8 @@ function render(prev, curr, alpha){
   else { ttf.style.top="50%"; ttf.style.height=(50*-touchThr)+"%"; ttf.style.background="var(--warn)"; }
   ttt.style.top=(50-44*touchThr)+"%";
 
-  // engine audio load: inertial low-pass of the input
-  const tgt=clamp((isFwd()?1:0)-(isRev()?1:0)+touchThr,-1,1);
+  // engine audio load: inertial low-pass of the input (replayed input when watching)
+  const tgt=watch ? clamp(feedThr,-1,1) : clamp((isFwd()?1:0)-(isRev()?1:0)+touchThr,-1,1);
   const rate = (Math.abs(tgt) > Math.abs(thrDisp) || (tgt!==0 && Math.sign(tgt)!==Math.sign(thrDisp))) ? 0.05 : 0.022;
   thrDisp += (tgt-thrDisp)*rate;
   if(Math.abs(thrDisp)<0.002) thrDisp=0;
@@ -542,4 +720,10 @@ window.__feed = (forcedSeed, packed) => {
   for(const p of packed){ for(let i=0;i<p[0];i++) feedQ.push([p[1],p[2],p[3],p[4]]); }
 };
 window.__setName = (n) => { name=n; try{ localStorage.setItem(LS_NAME,n); }catch(e){} nameGateOpen=false; $("nameGate").classList.remove("show"); $("lvName").textContent=n; };
+// e2e: spectate a stored run by id (same path as clicking a leaderboard row)
+window.__watch = id => fetchReplay(id).then(r => { if(r) startReplay(r); return !!r; });
+window.__watchState = () => ({ watching: !!watch, who: watch&&watch.name, ended: watchEndOpen, feedLeft: feedQ?feedQ.length:0 });
+window.__ghost = () => ghost ? { name: ghost.name, tick: ghost.i, of: ghost.feed.length, done: ghost.sim.done,
+  x: ghost.sim.st.x, y: ghost.sim.st.y, on: ghostsOn } : { on: ghostsOn };
+window.__setGhosts = v => { if(!!v!==ghostsOn) toggleGhosts(); };
 })();

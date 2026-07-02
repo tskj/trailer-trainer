@@ -154,6 +154,20 @@ export function createScene(canvas, G) {
   const trailer = buildTrailer(G);
   scene.add(car.group, trailer.group);
 
+  // ---- ghost rig: same geometry, one unlit translucent "hologram" material.
+  //      depthWrite off + renderOrder above skids so the real rig always wins
+  //      the depth fight and the ghost reads as a projection, not an object. ----
+  const ghostMat = new THREE.MeshBasicMaterial({
+    color: new THREE.Color('#8fe7f5'), transparent: true, opacity: 0.30, depthWrite: false });
+  const ghostify = (group) => group.traverse(o => {
+    if (o.isMesh) { o.material = ghostMat; o.castShadow = false; o.receiveShadow = false; o.renderOrder = 3; }
+  });
+  const gCar = buildCar(G);
+  const gTrailer = buildTrailer(G);
+  ghostify(gCar.group); ghostify(gTrailer.group);
+  gCar.group.visible = gTrailer.group.visible = false;
+  scene.add(gCar.group, gTrailer.group);
+
   // ---- per-level dynamic content ----
   const dyn = new THREE.Group();
   scene.add(dyn);
@@ -310,24 +324,38 @@ export function createScene(canvas, G) {
     }
   }
 
-  function update(pose, view) {
-    // --- rig transforms ---
-    car.group.position.set(pose.x, 0, pose.y);
-    car.group.rotation.y = -pose.theta;
-    car.steer(pose.delta);
+  // pose one car+trailer pair from a sim state. Returns the derived trailer
+  // pitch (the cargo wobble needs it). Shared by the player rig and the ghost.
+  function poseRig(c, t, pose) {
+    c.group.position.set(pose.x, 0, pose.y);
+    c.group.rotation.y = -pose.theta;
+    c.steer(pose.delta);
     // body attitude (cosmetic): pitch about the lateral axis (z), roll about the forward axis (x)
-    car.tilt.rotation.set(pose.roll || 0, 0, pose.pitch || 0);
+    c.tilt.rotation.set(pose.roll || 0, 0, pose.pitch || 0);
 
     // single shared coupling point: the hitch as carried by the car's (tilted) sprung body.
     // getWorldPosition refreshes the car's world matrices, so this already includes pitch/roll.
-    const H = car.hitchAnchor.getWorldPosition(_hitch);
+    const H = c.hitchAnchor.getWorldPosition(_hitch);
     // trailer hangs off H: place its tongue tip exactly there, then derive a pitch that puts
     // its axle back on the ground. Tongue tip stays glued to the car; wheels stay planted.
     const ty = G.wheelL / 2 + 1;
-    trailer.group.position.set(H.x, H.y - ty, H.z);
-    trailer.group.rotation.y = -pose.phi;
+    t.group.position.set(H.x, H.y - ty, H.z);
+    t.group.rotation.y = -pose.phi;
     const trPitch = Math.asin(clamp((H.y - ty) / G.draw_d, -0.5, 0.5));
-    trailer.tilt.rotation.set(pose.trRoll || 0, 0, trPitch);
+    t.tilt.rotation.set(pose.trRoll || 0, 0, trPitch);
+    return trPitch;
+  }
+
+  // ghost rig follows a second (replayed) sim; null hides it
+  function updateGhost(pose) {
+    const vis = !!pose;
+    if (gCar.group.visible !== vis) gCar.group.visible = gTrailer.group.visible = vis;
+    if (vis) poseRig(gCar, gTrailer, pose);
+  }
+
+  function update(pose, view) {
+    // --- rig transforms ---
+    const trPitch = poseRig(car, trailer, pose);
 
     // --- cargo wobble: each piece is a damped oscillator (semi-implicit Euler, real
     //     dt clamped for stability) chasing an exaggerated copy of the trailer's own
@@ -429,7 +457,7 @@ export function createScene(canvas, G) {
     const b = trailer.tilt.getWorldPosition(new THREE.Vector3());   // trailer's pivot = its tongue tip
     return { car: [a.x, a.y, a.z], tongue: [b.x, b.y, b.z], gap: a.distanceTo(b) };
   }
-  return { renderer, scene, camera, resize, buildLevel, update, project, aim, updateSkids, clearSkids, hitchDbg, skidCountDbg: () => skidVerts.length/18 };
+  return { renderer, scene, camera, resize, buildLevel, update, updateGhost, project, aim, updateSkids, clearSkids, hitchDbg, skidCountDbg: () => skidVerts.length/18 };
 }
 
 // =========================================================================

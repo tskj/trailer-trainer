@@ -7,7 +7,10 @@ global leaderboards. Live at **https://trailer-trainer.up.railway.app**.
 
 - **Client** (`index.html`, `src/main.js`, `src/render3d.js`): Three.js renderer +
   TrackMania-style flow. Space restarts, Enter advances, Tab opens levels,
-  digits jump. Driver name is picked once (localStorage).
+  digits jump. Driver name is picked once (localStorage). The level select is
+  a leaderboard browser: hover/arrow a level to see both boards, click any
+  entry to watch that run re-simulated in-engine. `G` toggles ghost racing —
+  the level's WR replays as a translucent rig in lockstep with your run.
 - **Deterministic sim** (`src/sim.js`, `src/levels.js`): pure modules shared by
   browser and server. Fixed 120 Hz ticks / 240 Hz substeps, seeded PRNG
   (mulberry32), quantized per-tick inputs (RLE-packed). Same (level, seed,
@@ -16,8 +19,9 @@ global leaderboards. Live at **https://trailer-trainer.up.railway.app**.
   log; the server re-simulates it and stores *its own* computed time/distance.
   Tampered claims and input logs that don't actually finish are rejected
   (tolerance exists for cross-engine float drift, but V8↔V8 replays match
-  exactly). Bump `SIM_VERSION` in `src/sim.js` whenever physics/levels change —
-  boards are per-version.
+  exactly). Stored logs are served back via `/api/replay?id=` for the replay
+  viewer and ghosts. Bump `SIM_VERSION` in `src/sim.js` whenever physics/levels
+  change — boards (and replay availability) are per-version.
 - **Two boards per level**: fastest time and shortest distance, best run per
   driver name. Names are honor-system (PoC).
 
@@ -31,8 +35,9 @@ npm run dev                    # vite on :5173, proxies /api -> :3210
 ```
 
 Useful debug hooks on `window`: `__tt()` telemetry, `__run()` current run,
-`__feed(seed, packedTicks)` replay injection, `__setName(n)`, `__audio()`,
-`__camZoom` camera dolly. `scripts/*.mjs` are headless playwright helpers
+`__feed(seed, packedTicks)` replay injection, `__watch(runId)` + `__watchState()`
+spectating, `__ghost()` + `__setGhosts(v)` ghost racing, `__setName(n)`,
+`__audio()`, `__camZoom` camera dolly. `scripts/*.mjs` are headless playwright helpers
 (SwiftShader runs ~40% real-time; prefer condition-driven waits).
 
 ## Deploy (Railway)
