@@ -151,7 +151,14 @@
   button.primary{background:var(--good);color:#10241a;border-color:var(--good);font-weight:600}
 
   /* ---------- touch controls (phone) ---------- */
+  .mobonly{display:none}
+  body.touch .mobonly{display:inline}
+  body.touch .deskonly{display:none}
   .touchctl{display:none}
+  .mobbtns{position:absolute;top:10px;right:12px;z-index:7;gap:8px}
+  body.touch .mobbtns{display:flex}
+  .mobbtns button{width:42px;height:42px;border-radius:16px;font-size:19px;padding:0;
+                  background:rgba(34,38,43,.82);color:var(--ink)}
   body.touch .touchctl{display:block}
   .touchSteer{position:absolute;left:0;right:88px;bottom:0;height:clamp(150px,34vh,300px);z-index:6;touch-action:none}
   .touchSteerBar{position:absolute;left:14px;right:94px;bottom:16px;z-index:7;pointer-events:none;display:none}
@@ -210,7 +217,7 @@
     <div class="lname" id="introName"></div>
     <div class="lgoal" id="introGoal"></div>
     <div class="lrec" id="introRec"></div>
-    <div class="keysline" id="introKeys" style="margin-top:7px"><span class="kbd">E</span> drive · <span class="kbd">D</span> reverse · mouse steers · <span class="kbd">Ctrl</span> brake · <span class="kbd">Space</span> restart · <span class="kbd">Tab</span> levels</div>
+    <div class="keysline" id="introKeys" style="margin-top:7px"><span class="deskonly"><span class="kbd">E</span> drive · <span class="kbd">D</span> reverse · mouse steers · <span class="kbd">Ctrl</span> brake · <span class="kbd">Space</span> restart · <span class="kbd">Tab</span> levels</span><span class="mobonly">slider drives · bar steers · tap to begin</span></div>
   </div>
 
   <!-- touch: steering zone + readout bar bottom-left; vertical acc/rev slider right -->
@@ -229,6 +236,10 @@
     <div class="tt-lab tt-dn">REV</div>
   </div>
   <div class="touchBrake" id="touchBrake">BRAKE</div>
+  <div class="mobbtns touchctl">
+    <button id="mobRetry" title="restart run">↺</button>
+    <button id="mobLevels" title="levels">≡</button>
+  </div>
 
   <div class="ring" id="ring"></div>
   <div class="dead" id="dead">

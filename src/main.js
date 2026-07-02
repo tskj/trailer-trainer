@@ -238,6 +238,9 @@ $("lvName").onclick=()=>{ closeLvSel(); openNameGate(name); };
 $("tapRetry").onclick=()=>loadLevel(levelIdx);
 $("tapNext").onclick=()=>nextLevel();
 $("tapLevels").onclick=()=>openLvSel();
+$("mobRetry").onclick=()=>loadLevel(levelIdx);
+$("mobLevels").onclick=()=>{ lvselOpen ? closeLvSel() : openLvSel(); };
+$("lvsel").addEventListener("click", e=>{ if(e.target.id==="lvsel") closeLvSel(); });
 
 // ---------------------------------------------------------------- mouse steering
 const stageEl = document.querySelector(".stage");
