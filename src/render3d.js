@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { regionInside } from './sim.js';
 
 // ---------------------------------------------------------------------------
 // 3D renderer for Trailer Trainer.
@@ -181,7 +182,7 @@ export function createScene(canvas, G) {
   // global hatch with no tiling seams / per-tile staggering, fwidth-antialiased so it
   // stays crisp at any zoom.
   const hatchMat = new THREE.ShaderMaterial({
-    transparent: true, depthWrite: false,
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
     polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -3,
     extensions: { derivatives: true },
     uniforms: {
@@ -276,6 +277,7 @@ export function createScene(canvas, G) {
     dyn.clear();
     clearSkids();
     bay = null;
+    let rasterBB = null;   // lazily computed once; shared by all raster fallbacks
     if (level.bay) bay = buildBay(level.bay, bayDims, dyn);
     for (const o of level.obstacles) {
       if (o.t === 'cone') {
@@ -295,9 +297,10 @@ export function createScene(canvas, G) {
         dyn.add(g);
       } else {
         // every keep-out shape -> a flat hatched polygon lying on the tarmac.
-        // 'or'/'not' composites the editor doesn't emit get no fill (the sim
-        // still enforces them).
-        let pts = null, hole = null, edgePts = null;
+        // Recognized primitives get exact polygons; arbitrary boolean combos
+        // fall back to a marching-squares raster of the same regionInside the
+        // sim evaluates (cosmetic only — the sim stays authoritative).
+        let pts = null, hole = null, edgePts = null, needRaster = false;
         if (o.t === 'wall') {
           const ca = Math.cos(o.ang), sa = Math.sin(o.ang);
           const cn = (lx, lz) => [o.x + lx * ca - lz * sa, o.y + lx * sa + lz * ca];
@@ -311,8 +314,11 @@ export function createScene(canvas, G) {
           } else pts = circ;
         } else if (o.t === 'and') {
           pts = andBlockRect(o);    // finite block = and(4 half-planes), the editor's "Block" tool
+          if (!pts) needRaster = true;
         } else if (o.t === 'half' || o.t === 'quad') {
           pts = regionPolygon(o);
+        } else if (o.t === 'or' || o.t === 'not') {
+          needRaster = true;
         }
         if (pts) {
           const shape = new THREE.Shape(pts.map(p => new THREE.Vector2(p[0], -p[1])));  // -y => world +z
@@ -327,6 +333,27 @@ export function createScene(canvas, G) {
             new THREE.BufferGeometry().setFromPoints((edgePts || pts).map(p => new THREE.Vector3(p[0], 0.2, p[1]))),
             edgeMat);
           dyn.add(edge);
+        } else if (needRaster) {
+          rasterBB = rasterBB || levelBounds(level);
+          const { tris, segs } = rasterRegion(o, rasterBB);
+          if (tris.length) {
+            const pos = new Float32Array(tris.length / 2 * 3);
+            for (let k = 0, v = 0; k < tris.length; k += 2) { pos[v++] = tris[k]; pos[v++] = 0; pos[v++] = tris[k + 1]; }
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+            const m = new THREE.Mesh(geo, hatchMat);
+            m.position.y = 0.16; m.frustumCulled = false;
+            dyn.add(m);
+          }
+          if (segs.length) {
+            const pos = new Float32Array(segs.length / 2 * 3);
+            for (let k = 0, v = 0; k < segs.length; k += 2) { pos[v++] = segs[k]; pos[v++] = 0.2; pos[v++] = segs[k + 1]; }
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+            const l = new THREE.LineSegments(geo, edgeMat);
+            l.frustumCulled = false;
+            dyn.add(l);
+          }
         }
       }
     }
@@ -385,6 +412,8 @@ export function createScene(canvas, G) {
     // --- camera ---
     // view.dolly: multiplies camera distance (editor pan/zoom); __camZoom: debug hook
     const vs = viewScale * (view.dolly || window.__camZoom || 1);
+    // editor wants an undistorted, square view; the game keeps the lens barrel
+    post.material.uniforms.uLens.value = view.noLens ? 0 : 0.06;
     if (view.rotateFollow) {
       const thS = -Math.PI / 2 - view.camRot;        // recover smoothed heading from camRot
       const fx = Math.cos(thS), fz = Math.sin(thS);
@@ -792,6 +821,77 @@ function buildBay(b, dims, parent) {
 // =========================================================================
 // region polygons (replicate the SVG keep-out shapes)
 // =========================================================================
+// bounding box of a level's "interesting" area, for rasterizing CSG combos:
+// every finite leaf coordinate (cones, discs, corner fillets, half-plane
+// lines pinned to the start) padded generously
+function levelBounds(level) {
+  let x0 = level.start.x, x1 = level.start.x, y0 = level.start.y, y1 = level.start.y;
+  const add = (x, y) => { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; };
+  if (level.bay) add(level.bay.x, level.bay.y);
+  const leaf = o => {
+    if (!o) return;
+    switch (o.t) {
+      case 'cone': add(o.x, o.y); break;
+      case 'half': o.axis === 'x' ? add(o.at, level.start.y) : add(level.start.x, o.at); break;
+      case 'disc': add(o.cx - o.r, o.cy - o.r); add(o.cx + o.r, o.cy + o.r); break;
+      case 'quad': add(o.flipx ? -o.ccx : o.ccx, o.flipy ? -o.ccy : o.ccy);
+                   add(o.flipx ? -o.ex : o.ex, o.flipy ? -o.ey : o.ey); break;
+      case 'and': case 'or': o.kids.forEach(leaf); break;
+      case 'not': leaf(o.kid); break;
+    }
+  };
+  level.obstacles.forEach(leaf);
+  return { x0: x0 - 900, x1: x1 + 900, y0: y0 - 900, y1: y1 + 900 };
+}
+
+// marching-squares raster of an arbitrary CSG region: sample regionInside on
+// a grid, bisect boundary crossings for crisp contours, emit fill triangles
+// (flat x,y pairs) + contour segments. Purely cosmetic — the sim evaluates
+// the region exactly.
+function rasterRegion(o, bb) {
+  const W = bb.x1 - bb.x0, H = bb.y1 - bb.y0;
+  const step = Math.max(9, Math.max(W, H) / 150);
+  const NX = Math.ceil(W / step), NY = Math.ceil(H / step);
+  const inside = new Uint8Array((NX + 1) * (NY + 1));
+  const gx = i => bb.x0 + i * step, gy = j => bb.y0 + j * step;
+  for (let j = 0; j <= NY; j++) for (let i = 0; i <= NX; i++)
+    inside[j * (NX + 1) + i] = regionInside(o, gx(i), gy(j)) ? 1 : 0;
+  const cross = (ax, ay, bx, by) => {          // bisect to the in/out boundary
+    let a = regionInside(o, ax, ay);
+    for (let k = 0; k < 12; k++) {
+      const mx = (ax + bx) / 2, my = (ay + by) / 2;
+      if (regionInside(o, mx, my) === a) { ax = mx; ay = my; } else { bx = mx; by = my; }
+    }
+    return [(ax + bx) / 2, (ay + by) / 2];
+  };
+  const tris = [], segs = [];
+  for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+    const c00 = inside[j * (NX + 1) + i],     c10 = inside[j * (NX + 1) + i + 1];
+    const c11 = inside[(j + 1) * (NX + 1) + i + 1], c01 = inside[(j + 1) * (NX + 1) + i];
+    const sum = c00 + c10 + c11 + c01;
+    if (sum === 0) continue;
+    const x0 = gx(i), y0 = gy(j), x1 = gx(i + 1), y1 = gy(j + 1);
+    if (sum === 4) { tris.push(x0, y0, x1, y0, x1, y1, x0, y0, x1, y1, x0, y1); continue; }
+    // boundary cell: walk the cell edge, keeping inside corners and crossings
+    const corners = [[x0, y0, c00], [x1, y0, c10], [x1, y1, c11], [x0, y1, c01]];
+    const poly = [], xs = [];
+    for (let e = 0; e < 4; e++) {
+      const [ax, ay, ain] = corners[e], [bx, by, bin] = corners[(e + 1) % 4];
+      if (ain) poly.push([ax, ay]);
+      if (ain !== bin) { const p = cross(ax, ay, bx, by); poly.push(p); xs.push(p); }
+    }
+    for (let k = 2; k < poly.length; k++)
+      tris.push(poly[0][0], poly[0][1], poly[k - 1][0], poly[k - 1][1], poly[k][0], poly[k][1]);
+    if (xs.length === 2) segs.push(xs[0][0], xs[0][1], xs[1][0], xs[1][1]);
+    else if (xs.length === 4) {                // ambiguous saddle: pair by centre sample
+      const cIn = regionInside(o, (x0 + x1) / 2, (y0 + y1) / 2);
+      const pairs = cIn ? [[1, 2], [3, 0]] : [[0, 1], [2, 3]];
+      for (const [a, b] of pairs) segs.push(xs[a][0], xs[a][1], xs[b][0], xs[b][1]);
+    }
+  }
+  return { tris, segs };
+}
+
 // the editor's finite "Block": and(x>=x0, x<=x1, y>=y0, y<=y1) -> rectangle
 function andBlockRect(o) {
   if (!Array.isArray(o.kids) || o.kids.length !== 4) return null;

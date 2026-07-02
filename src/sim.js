@@ -122,7 +122,7 @@ function boxesOverlap(A,B){ const axes=[]; const add=b=>{const c=Math.cos(b.ang)
     for(const[x,y]of cb){const p=x*ax+y*ay;if(p<mnB)mnB=p;if(p>mxB)mxB=p;}
     if(mxA<mnB||mxB<mnA) return false; }
   return true; }
-function regionInside(rg,x,y){
+export function regionInside(rg,x,y){
   // CSG combinators (additive — no shipped level uses them, so replays of
   // existing records never reach these branches). Editor levels compose
   // primitives with them: a finite block is and(4 half-planes), etc.

@@ -8,6 +8,7 @@
 // Minimum sizes are enforced at creation time (no thin slivers); the real
 // playability gate is the publish-side proof run.
 import { hydrateLevel } from './levels.js';
+import { regionInside } from './sim.js';
 
 const SNAP = 5, MIN_BLOCK = 30, MIN_DISC = 25, MIN_CORNER = 30;
 const snap = v => Math.round(v / SNAP) * SNAP;
@@ -30,8 +31,33 @@ function regionHandle(o, cam){
   if(o.t === 'half') return o.axis === 'x' ? { x: o.at, y: cam.y } : { x: cam.x, y: o.at };
   if(o.t === 'disc') return { x: o.cx, y: o.cy };
   if(o.t === 'quad') return { x: o.flipx ? -o.ccx : o.ccx, y: o.flipy ? -o.ccy : o.ccy };
-  if(o.t === 'and'){ const r = rectOf(o); return r ? { x: (r.x0 + r.x1) / 2, y: (r.y0 + r.y1) / 2 } : { x: 0, y: 0 }; }
+  if(o.t === 'and'){ const r = rectOf(o); if(r) return { x: (r.x0 + r.x1) / 2, y: (r.y0 + r.y1) / 2 }; }
+  if(o.t === 'and' || o.t === 'or' || o.t === 'not'){   // combos: centroid of their leaves
+    const pts = [];
+    (function walk(n){ if(!n) return;
+      if(n.t === 'and' || n.t === 'or') n.kids.forEach(walk);
+      else if(n.t === 'not') walk(n.kid);
+      else pts.push(regionHandle(n, cam)); })(o);
+    if(pts.length) return { x: pts.reduce((s, p) => s + p.x, 0) / pts.length,
+                            y: pts.reduce((s, p) => s + p.y, 0) / pts.length };
+  }
   return { x: 0, y: 0 };
+}
+// move any region (CSG trees included) by a world delta
+function translateRegion(o, dx, dy){
+  switch(o.t){
+    case 'half': o.at += o.axis === 'x' ? dx : dy; break;
+    case 'disc': o.cx += dx; o.cy += dy; break;
+    case 'quad': { const fx = o.flipx ? -dx : dx, fy = o.flipy ? -dy : dy;
+      o.ccx += fx; o.ex += fx; o.ccy += fy; o.ey += fy; break; }
+    case 'and': case 'or': o.kids.forEach(k => translateRegion(k, dx, dy)); break;
+    case 'not': translateRegion(o.kid, dx, dy); break;
+  }
+}
+function countLeaves(o){
+  if(o.t === 'and' || o.t === 'or') return o.kids.reduce((s, k) => s + countLeaves(k), 0);
+  if(o.t === 'not') return countLeaves(o.kid);
+  return 1;
 }
 function rectOf(o){
   let x0 = null, x1 = null, y0 = null, y1 = null;
@@ -56,9 +82,28 @@ export function createEditor(ctx){
   let def = BLANK();
   try{ const d = JSON.parse(localStorage.getItem(LS_DRAFT) || 'null'); if(d && d.start && d.bay && Array.isArray(d.obstacles)) def = d; }catch(e){}
   let tool = 'select', sel = null;              // sel: {kind:'cone'|'region'|'bay'|'start', i?}
-  let cam = { x: 0, y: 0 }, dolly = 1;
+  let cam = { x: 0, y: 0 }, dolly = 1.7;
   let drag = null, dirty = true, undoStack = [];
+  let combineArm = null;                         // {op:'and'|'cut', i} while waiting for the 2nd shape
   let published = null;                          // {id, url} of the last publish
+
+  // consistent starting view: frame the level's content, biased far out
+  function fitView(){
+    let x0 = Math.min(def.start.x, def.bay.x), x1 = Math.max(def.start.x, def.bay.x);
+    let y0 = Math.min(def.start.y, def.bay.y), y1 = Math.max(def.start.y, def.bay.y);
+    const add = (x, y) => { if(x < x0) x0 = x; if(x > x1) x1 = x; if(y < y0) y0 = y; if(y > y1) y1 = y; };
+    (function walk(n){ if(!n) return;
+      if(n.t === 'and' || n.t === 'or') n.kids.forEach(walk);
+      else if(n.t === 'not') walk(n.kid);
+      else if(n.t === 'cone') add(n.x, n.y);
+      else if(n.t === 'disc'){ add(n.cx - n.r, n.cy - n.r); add(n.cx + n.r, n.cy + n.r); }
+      else if(n.t === 'quad') add(n.flipx ? -n.ccx : n.ccx, n.flipy ? -n.ccy : n.ccy);
+    })({ t: 'and', kids: def.obstacles });
+    cam = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+    const r = ctx.surface.getBoundingClientRect();
+    const aspect = Math.max(0.5, (Math.max(r.width, 320) - 280) / Math.max(r.height, 320));
+    dolly = clamp(Math.max((y1 - y0 + 360) / 600, (x1 - x0 + 360) / (600 * aspect), 1.7), 1.7, 5);
+  }
 
   // ---------------------------------------------------------------- def ops
   const defJson = () => JSON.stringify(def);
@@ -88,7 +133,7 @@ export function createEditor(ctx){
     const s = def.start;
     R.update(
       { x: s.x, y: s.y, theta: s.th, phi: s.th, delta: 0, v: 0, pitch: 0, roll: 0, trRoll: 0 },
-      { camX: cam.x, camY: cam.y, camRot: 0, camLook: 0, rotateFollow: false, dolly,
+      { camX: cam.x, camY: cam.y, camRot: 0, camLook: 0, rotateFollow: false, dolly, noLens: true,
         bayColor: '#ffc233', bayEdge: '#ffb01a', trails: EMPTY_TRAILS, trailsOn: false });
     R.updateGhost(null);
     positionGizmos();
@@ -135,7 +180,11 @@ export function createEditor(ctx){
         if(Math.abs(d - o.r) < tol) return { kind: 'region', i, part: 'radius' };
         if(d < tol * 1.2) return { kind: 'region', i };
       }
-      else if(o.t === 'and'){ const r = rectOf(o); if(r && w.x > r.x0 - tol/2 && w.x < r.x1 + tol/2 && w.y > r.y0 - tol/2 && w.y < r.y1 + tol/2) return { kind: 'region', i }; }
+      else if(o.t === 'and' || o.t === 'or' || o.t === 'not'){
+        const h = regionHandle(o, cam);
+        if(Math.hypot(w.x - h.x, w.y - h.y) < tol * 1.5) return { kind: 'region', i };
+        if(regionInside(o, w.x, w.y)) return { kind: 'region', i };
+      }
       else if(o.t === 'quad'){ const h = regionHandle(o, cam); if(Math.hypot(w.x - h.x, w.y - h.y) < tol * 1.5) return { kind: 'region', i }; }
     }
     return null;
@@ -153,16 +202,25 @@ export function createEditor(ctx){
 
   surf.addEventListener('pointerdown', e => {
     surf.setPointerCapture(e.pointerId);
-    const w = evWorld(e);
+    pressAt(evWorld(e), () => { drag = { mode: 'pan', cx: cam.x, cy: cam.y, sx: e.clientX, sy: e.clientY }; });
+  });
+  // a press at world point w; panStart runs when empty space is grabbed
+  function pressAt(w, panStart){
     if(tool === 'select'){
       const hit = hitTest(w);
+      if(combineArm){                            // second click of intersect/cut
+        const arm = combineArm; combineArm = null;
+        if(hit && hit.kind === 'region' && hit.i !== arm.i) combineShapes(arm.op, arm.i, hit.i);
+        else setStatus('combine cancelled');
+        return;
+      }
       if(hit){
         sel = hit; renderParams();
         pushUndo();
         drag = { mode: 'move', part: hit.part, w0: w, snap0: JSON.stringify(selNode() ?? (hit.kind === 'bay' ? def.bay : def.start)) };
       } else {
         sel = null; renderParams();
-        drag = { mode: 'pan', cx: cam.x, cy: cam.y, sx: e.clientX, sy: e.clientY };
+        panStart();
       }
     } else if(tool === 'cone'){
       pushUndo();
@@ -170,7 +228,7 @@ export function createEditor(ctx){
       sel = { kind: 'cone', i: def.obstacles.length - 1 };
       drag = { mode: 'move', w0: w, snap0: JSON.stringify(selNode()) };
       mutated();
-    } else if(tool === 'edge'){
+    } else if(tool === 'wall'){
       pushUndo();
       const side = $('edEdgeSide').value;   // 'x+','x-','y+','y-'
       const axis = side[0], sign = side[1] === '+' ? 1 : -1;
@@ -202,7 +260,7 @@ export function createEditor(ctx){
       drag = { mode: 'move', w0: w, snap0: JSON.stringify(q) };
       mutated();
     }
-  });
+  }
   surf.addEventListener('pointermove', e => {
     if(!drag) return;
     const w = evWorld(e);
@@ -234,21 +292,17 @@ export function createEditor(ctx){
       else {
         const o = def.obstacles[sel.i];
         if(o.t === 'cone'){ o.x = s0.x + dx; o.y = s0.y + dy; }
-        else if(o.t === 'half'){ o.at = s0.at + (o.axis === 'x' ? dx : dy); }
-        else if(o.t === 'disc'){
-          if(drag.part === 'radius') o.r = Math.max(MIN_DISC, snap(Math.hypot(w.x - o.cx, w.y - o.cy)));
-          else { o.cx = s0.cx + dx; o.cy = s0.cy + dy; }
-        }
-        else if(o.t === 'and'){ const r0 = rectOf(s0); def.obstacles[sel.i] = Object.assign(o, mkBlock(r0.x0 + dx, r0.y0 + dy, r0.x1 + dx, r0.y1 + dy)); }
-        else if(o.t === 'quad'){
-          const wx = (s0.flipx ? -s0.ccx : s0.ccx) + dx, wy = (s0.flipy ? -s0.ccy : s0.ccy) + dy;
-          setCorner(o, wx, wy);
-        }
+        else if(o.t === 'disc' && drag.part === 'radius'){ o.r = Math.max(MIN_DISC, snap(Math.hypot(w.x - o.cx, w.y - o.cy))); }
+        else { translateRegion(s0, dx, dy); def.obstacles[sel.i] = s0; }   // any region incl. CSG trees
       }
       mutated(); return;
     }
   });
-  const endDrag = () => { drag = null; };
+  const endDrag = () => {
+    // placing a shape drops you back into select to adjust it (cones repeat)
+    if(drag && tool !== 'select' && tool !== 'cone') setTool('select');
+    drag = null;
+  };
   surf.addEventListener('pointerup', endDrag);
   surf.addEventListener('pointercancel', endDrag);
 
@@ -261,6 +315,23 @@ export function createEditor(ctx){
 
   const selNode = () => sel && sel.kind !== 'bay' && sel.kind !== 'start' ? def.obstacles[sel.i] : null;
 
+  // boolean ops: intersect selected shape with another, or cut one out of it
+  function armCombine(op){
+    combineArm = { op, i: sel.i };
+    setStatus(op === 'and' ? 'now click the shape to intersect with' : 'now click the shape to cut out of this one');
+  }
+  function combineShapes(op, i, j){
+    pushUndo();
+    const A = def.obstacles[i], B = def.obstacles[j];
+    const combo = op === 'cut' ? { t: 'and', kids: [A, { t: 'not', kid: B }] } : { t: 'and', kids: [A, B] };
+    def.obstacles.splice(Math.max(i, j), 1);
+    const keep = Math.min(i, j);
+    def.obstacles[keep] = combo;
+    sel = { kind: 'region', i: keep };
+    setStatus(op === 'and' ? 'shapes intersected — only the overlap is wall now' : 'cut — the second shape was carved out');
+    mutated();
+  }
+
   // ---------------------------------------------------------------- keyboard
   function key(e){
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -268,7 +339,11 @@ export function createEditor(ctx){
       if(e.key === 'Escape') e.target.blur();
       return;
     }
-    if(e.key === 'Escape'){ if(sel){ sel = null; renderParams(); } else ctx.onExit(); return; }
+    if(e.key === 'Escape'){
+      if(combineArm){ combineArm = null; setStatus('combine cancelled'); return; }
+      if(sel){ sel = null; renderParams(); } else ctx.onExit();
+      return;
+    }
     if((e.ctrlKey || e.metaKey) && k === 'z'){ undo(); e.preventDefault(); return; }
     if(e.key === 'Delete' || e.key === 'Backspace'){
       if(sel && sel.kind !== 'bay' && sel.kind !== 'start'){ pushUndo(); def.obstacles.splice(sel.i, 1); sel = null; mutated(); }
@@ -285,19 +360,19 @@ export function createEditor(ctx){
     else if(k === 's' || e.key === 'ArrowDown'){ cam.y += PAN * 0.3; e.preventDefault(); }
     else if(k === 'a' || e.key === 'ArrowLeft'){ cam.x -= PAN * 0.3; e.preventDefault(); }
     else if(k === 'd' || e.key === 'ArrowRight'){ cam.x += PAN * 0.3; e.preventDefault(); }
-    else if(/^[1-6]$/.test(k)){ setTool(['select','cone','edge','block','disc','corner'][+k - 1]); }
+    else if(/^[1-6]$/.test(k)){ setTool(['select','cone','wall','block','disc','corner'][+k - 1]); }
   }
 
   // ---------------------------------------------------------------- panel
-  const TOOLS = ['select', 'cone', 'edge', 'block', 'disc', 'corner'];
   function setTool(t){
     tool = t;
-    for(const b of document.querySelectorAll('#edTools button')) b.classList.toggle('on', b.dataset.tool === t);
-    $('edEdgeOpts').style.display = t === 'edge' ? '' : 'none';
+    combineArm = null;
+    for(const b of document.querySelectorAll('#editor [data-tool]')) b.classList.toggle('on', b.dataset.tool === t);
+    $('edEdgeOpts').style.display = t === 'wall' ? '' : 'none';
     $('edDiscOpts').style.display = t === 'disc' ? '' : 'none';
     $('edCornerOpts').style.display = t === 'corner' ? '' : 'none';
   }
-  for(const b of document.querySelectorAll('#edTools button')) b.onclick = () => setTool(b.dataset.tool);
+  for(const b of document.querySelectorAll('#editor [data-tool]')) b.onclick = () => setTool(b.dataset.tool);
 
   function renderParams(){
     const box = $('edParams'); box.replaceChildren();
@@ -313,18 +388,45 @@ export function createEditor(ctx){
     if(sel.kind === 'start'){ add('start pose · <span class="ed-dim">drag to move · Q/E rotate</span>'); return; }
     const o = def.obstacles[sel.i];
     if(!o) { sel = null; return; }
+    // boolean ops available on every wall shape
+    const combineRow = () => {
+      const d = add(`<span class="ed-dim">boolean:</span> <button id="edAnd" title="keep only the overlap of this and another shape">∩ intersect…</button>
+        <button id="edCut" title="carve another shape out of this one">− cut…</button>`);
+      d.querySelector('#edAnd').onclick = () => armCombine('and');
+      d.querySelector('#edCut').onclick = () => armCombine('cut');
+    };
     if(o.t === 'cone') add('cone · <span class="ed-dim">drag to move · Del to remove</span>');
-    else if(o.t === 'half') add('infinite wall · <span class="ed-dim">drag to shift · Del to remove</span>');
-    else if(o.t === 'and') add('block · <span class="ed-dim">drag to move · Del to remove</span>');
+    else if(o.t === 'half'){
+      const d = add(`infinite wall — fills
+        <select id="edSide">
+          <option value="y+">downward (+y)</option><option value="y-">upward (−y)</option>
+          <option value="x+">rightward (+x)</option><option value="x-">leftward (−x)</option>
+        </select>`);
+      const s = d.querySelector('#edSide'); s.value = o.axis + (o.sign === 1 ? '+' : '-');
+      s.onchange = () => {
+        pushUndo();
+        const h = regionHandle(o, cam);           // keep the wall line under the current handle
+        o.axis = s.value[0]; o.sign = s.value[1] === '+' ? 1 : -1;
+        o.at = snap(o.axis === 'x' ? h.x : h.y);
+        mutated();
+      };
+      combineRow();
+    }
+    else if(o.t === 'and' && rectOf(o)){ add('block · <span class="ed-dim">drag to move · Del to remove</span>'); combineRow(); }
     else if(o.t === 'disc'){
       const d = add(`circle wall · r <input id="edR" type="number" min="${MIN_DISC}" max="3000" step="5" value="${o.r}">
         <label><input id="edInv" type="checkbox" ${o.mode === 'out' ? 'checked' : ''}> inverted (arena)</label>`);
       d.querySelector('#edR').onchange = ev => { pushUndo(); o.r = clamp(+ev.target.value || o.r, MIN_DISC, 3000); mutated(); };
       d.querySelector('#edInv').onchange = ev => { pushUndo(); o.mode = ev.target.checked ? 'out' : 'in'; mutated(); };
+      combineRow();
     }
     else if(o.t === 'quad'){
       const d = add(`corner wall · r <input id="edR" type="number" min="${MIN_CORNER}" max="3000" step="5" value="${o.r}">
-        squareness <select id="edN"><option value="2">round</option><option value="4">squarish</option><option value="8">square</option></select>`);
+        squareness <select id="edN"><option value="2">round</option><option value="4">squarish</option><option value="8">square</option></select><br>
+        fills <select id="edQDir">
+          <option value="ff">↘ (+x,+y)</option><option value="tf">↙ (−x,+y)</option>
+          <option value="ft">↗ (+x,−y)</option><option value="tt">↖ (−x,−y)</option>
+        </select>`);
       d.querySelector('#edR').onchange = ev => {
         pushUndo();
         const w = regionHandle(o, cam);
@@ -333,6 +435,27 @@ export function createEditor(ctx){
       };
       const ns = d.querySelector('#edN'); ns.value = String(o.n || 2);
       ns.onchange = () => { pushUndo(); o.n = +ns.value; if(o.n === 2) delete o.n; mutated(); };
+      const qd = d.querySelector('#edQDir'); qd.value = (o.flipx ? 't' : 'f') + (o.flipy ? 't' : 'f');
+      qd.onchange = () => {
+        pushUndo();
+        const w = regionHandle(o, cam);           // fillet centre stays put, wall swings around it
+        if(qd.value[0] === 't') o.flipx = true; else delete o.flipx;
+        if(qd.value[1] === 't') o.flipy = true; else delete o.flipy;
+        setCorner(o, w.x, w.y); mutated();
+      };
+      combineRow();
+    }
+    else if(o.t === 'and' || o.t === 'or' || o.t === 'not'){
+      const n = countLeaves(o);
+      const d = add(`combined shape (${n} parts) · <span class="ed-dim">drag to move</span>` +
+        (o.kids ? '<br><button id="edSplit" title="break back into separate shapes">split apart</button>' : ''));
+      const sp = d.querySelector('#edSplit');
+      if(sp) sp.onclick = () => {
+        pushUndo();
+        def.obstacles.splice(sel.i, 1, ...o.kids.map(k => k.t === 'not' ? k.kid : k));
+        sel = null; setStatus('split into parts'); mutated();
+      };
+      combineRow();
     }
   }
 
@@ -363,7 +486,7 @@ export function createEditor(ctx){
     catch(e){ setStatus(published.url); }
   };
   $('edPlay').onclick = () => { if(published) ctx.onPlayPublished(published.id); };
-  $('edNew').onclick = () => { pushUndo(); def = BLANK(); sel = null; cam = { x: 0, y: -80 }; dolly = 1; setStatus(''); mutated(); };
+  $('edNew').onclick = () => { pushUndo(); def = BLANK(); sel = null; fitView(); setStatus(''); mutated(); };
   // "start from a level…": any campaign level or published community level
   async function fillSources(){
     const box = $('edSource');
@@ -386,8 +509,7 @@ export function createEditor(ctx){
       obstacles: JSON.parse(JSON.stringify(d.obstacles)),
     };
     sel = null;
-    cam = { x: (def.start.x + def.bay.x) / 2, y: (def.start.y + def.bay.y) / 2 };
-    dolly = clamp(Math.hypot(def.start.x - def.bay.x, def.start.y - def.bay.y) / 420, 0.6, 4);
+    fitView();
     setStatus(`loaded “${def.name}” — your edits make it a new level`);
     mutated();
   };
@@ -406,8 +528,8 @@ export function createEditor(ctx){
   // ---------------------------------------------------------------- activate
   let everActivated = false;
   function activate(){
-    sel = null; drag = null; dirty = true;
-    if(!everActivated){ cam = { x: (def.start.x + def.bay.x) / 2, y: (def.start.y + def.bay.y) / 2 }; everActivated = true; }
+    sel = null; drag = null; combineArm = null; dirty = true;
+    if(!everActivated){ fitView(); everActivated = true; }
     fillSources();
     setTool(tool);
     renderParams(); syncTopUI();
@@ -417,5 +539,6 @@ export function createEditor(ctx){
   function setDef(d){ pushUndo(); def = JSON.parse(JSON.stringify(d)); sel = null; mutated(); }
 
   setTool('select'); renderParams(); syncTopUI();
-  return { frame, key, activate, setStatus, setProofState, setDef, getDef: () => JSON.parse(defJson()) };
+  return { frame, key, activate, setStatus, setProofState, setDef, getDef: () => JSON.parse(defJson()),
+           _press: (x, y) => { pressAt({ x, y }, () => {}); endDrag(); } };
 }

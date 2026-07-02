@@ -875,5 +875,6 @@ window.__setGhosts = v => { if(!!v!==ghostsOn) toggleGhosts(); };
 window.__edOpen = () => openEditor();
 window.__edSetDef = d => { if(ED) ED.setDef(d); };
 window.__edGetDef = () => ED && ED.getDef();
+window.__edPress = (x, y) => { if(ED) ED._press(x, y); };
 window.__edState = () => ({ open: editorOpen, proof: !!editorProof, draft: !!(level&&level.draft), level: level&&level.id });
 })();

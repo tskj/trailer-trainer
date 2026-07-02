@@ -187,9 +187,12 @@
             font-family:var(--mono);font-size:11px;color:var(--ink)}
   .ed-title{font-size:12px;letter-spacing:.22em;color:var(--marking);text-transform:uppercase}
   .ed-in{font-size:12px;padding:7px 9px;text-align:left}
+  .ed-selbtn{width:100%;padding:8px 4px}
+  .ed-selbtn.on{border-color:var(--good);color:var(--good);background:rgba(86,217,138,.08)}
+  .ed-addlab{font-size:9px;margin-bottom:-5px}
   .ed-tools{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px}
   .ed-tools button{padding:7px 4px;font-size:10.5px}
-  .ed-tools button.on{border-color:var(--cyan);color:var(--cyan)}
+  .ed-tools button.on{border-color:var(--cyan);color:var(--cyan);background:rgba(57,194,215,.08)}
   .ed-params{min-height:52px;border-top:1px solid var(--line);padding-top:8px;line-height:1.8}
   .ed-grow{flex:1}
   .ed-dim{color:var(--ink-dim)}
@@ -415,10 +418,11 @@
       <div class="ed-title">Level editor</div>
       <input class="gate-input ed-in" id="edName" maxlength="40" placeholder="level name" autocomplete="off" spellcheck="false">
       <input class="gate-input ed-in" id="edGoal" maxlength="140" placeholder="goal text (optional)" autocomplete="off" spellcheck="false">
+      <button data-tool="select" class="ed-selbtn">⊙ select / move</button>
+      <div class="ed-addlab keysline">add shape</div>
       <div class="ed-tools" id="edTools">
-        <button data-tool="select">select</button>
         <button data-tool="cone">cone</button>
-        <button data-tool="edge">edge</button>
+        <button data-tool="wall">wall</button>
         <button data-tool="block">block</button>
         <button data-tool="disc">circle</button>
         <button data-tool="corner">corner</button>
