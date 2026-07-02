@@ -203,6 +203,8 @@
   .ed-opts{color:var(--ink-dim)}
   .editor select{font-family:var(--mono);font-size:11px;background:var(--asphalt);color:var(--ink);
                  border:1px solid var(--line);border-radius:8px;padding:3px 6px;max-width:100%}
+  #edSource{flex:1;padding:7px 6px;border-radius:14px;cursor:pointer}
+  #edSource:hover{border-color:var(--marking)}
   .ed-params input[type=number]{width:60px;font-family:var(--mono);font-size:11px;background:rgba(0,0,0,.3);
                  color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:3px 6px}
   .ed-handle{position:absolute;width:14px;height:14px;border:2px solid rgba(57,194,215,.65);
@@ -450,8 +452,8 @@
         <div class="ed-btns" style="margin-top:6px"><button id="edCopy">copy link</button><button class="primary" id="edPlay">play it</button></div>
       </div>
       <div class="ed-status" id="edStatus"></div>
+      <div class="ed-btns"><select id="edSource" title="open a copy of any campaign or community level"><option value="">start from a level…</option></select></div>
       <div class="ed-btns">
-        <button id="edRemix" title="start from the level you were just playing">remix level</button>
         <button id="edNew">new</button>
         <button id="edExit">exit</button>
       </div>

@@ -320,7 +320,25 @@ function openEditor(){
     onPublish: doPublish,
     onPlayPublished: id => { const i=LEVELS.findIndex(l=>l.id===id); closeEditor(false); if(i>=0) loadLevel(i); },
     onExit: () => closeEditor(true),
-    getRemixSource: () => LEVELS[editorReturnIdx] || level,
+    // "start from a level…" sources: campaign + loaded customs + published community levels
+    getSources: async () => {
+      if(!commCache || Date.now()-commAt>30000){
+        const r = await fetchLevelList();
+        if(r){ commCache = r.levels || []; commAt = Date.now(); }
+      }
+      const out = LEVELS.filter(l => l.bay && !l.draft)
+        .map(l => ({ id: l.id, label: (l.custom ? '★ ' : '') + l.name }));
+      for(const L of (commCache || []))
+        if(!LEVELS.some(l => l.id === L.id)) out.push({ id: L.id, label: `★ ${L.name} — ${L.author}` });
+      return out;
+    },
+    fetchDef: async id => {
+      const lv = LEVELS.find(l => l.id === id && !l.draft);
+      if(lv && lv.bay) return { name: lv.name, goal: lv.goal, start: lv.start,
+        bay: { x: lv.bay.x, y: lv.bay.y, ang: lv.bay.ang, fit: lv.bay.fit }, obstacles: lv.obstacles };
+      const r = await fetchLevelDef(id);
+      return r && r.def || null;
+    },
   });
   if(!level.draft) editorReturnIdx = levelIdx;
   editorOpen = true;

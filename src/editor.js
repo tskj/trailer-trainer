@@ -16,10 +16,12 @@ const norm = a => Math.atan2(Math.sin(a), Math.cos(a));
 const DEG15 = Math.PI / 12;
 const LS_DRAFT = 'tt.editorDraft';
 
+// blank template mirrors level 1's shape: rig north of the bay facing away,
+// trailer hanging between them — the natural pose for a back-in level
 const BLANK = () => ({
   name: '', goal: '',
-  start: { x: 0, y: 220, th: -Math.PI / 2 },
-  bay:   { x: 0, y: -160, ang: Math.PI / 2, fit: 'trailer' },
+  start: { x: 0, y: -220, th: -Math.PI / 2 },
+  bay:   { x: 0, y: 60, ang: Math.PI / 2, fit: 'trailer' },
   obstacles: [],
 });
 
@@ -361,19 +363,32 @@ export function createEditor(ctx){
     catch(e){ setStatus(published.url); }
   };
   $('edPlay').onclick = () => { if(published) ctx.onPlayPublished(published.id); };
-  $('edNew').onclick = () => { pushUndo(); def = BLANK(); sel = null; cam = { x: 0, y: 0 }; mutated(); };
-  $('edRemix').onclick = () => {
-    const src = ctx.getRemixSource();
-    if(!src || !src.bay){ setStatus('current level has no bay to remix', true); return; }
+  $('edNew').onclick = () => { pushUndo(); def = BLANK(); sel = null; cam = { x: 0, y: -80 }; dolly = 1; setStatus(''); mutated(); };
+  // "start from a level…": any campaign level or published community level
+  async function fillSources(){
+    const box = $('edSource');
+    box.replaceChildren(new Option('start from a level…', ''));
+    const list = await ctx.getSources().catch(() => []);
+    for(const s of list) box.add(new Option(s.label, s.id));
+  }
+  $('edSource').onchange = async e => {
+    const id = e.target.value;
+    e.target.value = '';
+    if(!id) return;
+    setStatus('loading level…');
+    const d = await ctx.fetchDef(id);
+    if(!d || !d.bay){ setStatus('could not load that level', true); return; }
     pushUndo();
     def = {
-      name: (src.name.replace(/^\d+ · /, '') + ' remix').slice(0, 40), goal: src.goal || '',
-      start: { x: src.start.x, y: src.start.y, th: src.start.th },
-      bay: { x: src.bay.x, y: src.bay.y, ang: src.bay.ang, fit: src.bay.fit },
-      obstacles: JSON.parse(JSON.stringify(src.obstacles)),
+      name: (d.name || '').replace(/^\d+ · /, '').slice(0, 40), goal: d.goal || '',
+      start: { x: d.start.x, y: d.start.y, th: d.start.th },
+      bay: { x: d.bay.x, y: d.bay.y, ang: d.bay.ang, fit: d.bay.fit },
+      obstacles: JSON.parse(JSON.stringify(d.obstacles)),
     };
-    sel = null; cam = { x: (src.start.x + src.bay.x) / 2, y: (src.start.y + src.bay.y) / 2 };
-    dolly = clamp(Math.hypot(src.start.x - src.bay.x, src.start.y - src.bay.y) / 420, 0.6, 4);
+    sel = null;
+    cam = { x: (def.start.x + def.bay.x) / 2, y: (def.start.y + def.bay.y) / 2 };
+    dolly = clamp(Math.hypot(def.start.x - def.bay.x, def.start.y - def.bay.y) / 420, 0.6, 4);
+    setStatus(`loaded “${def.name}” — your edits make it a new level`);
     mutated();
   };
   $('edExit').onclick = () => ctx.onExit();
@@ -393,6 +408,7 @@ export function createEditor(ctx){
   function activate(){
     sel = null; drag = null; dirty = true;
     if(!everActivated){ cam = { x: (def.start.x + def.bay.x) / 2, y: (def.start.y + def.bay.y) / 2 }; everActivated = true; }
+    fillSources();
     setTool(tool);
     renderParams(); syncTopUI();
   }

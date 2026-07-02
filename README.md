@@ -28,7 +28,8 @@ global leaderboards. Live at **https://trailer-trainer.up.railway.app**.
   "editor". Obstacle geometry is a small CSG language over infinite primitives
   (`half` plane, `quad` superellipse-filleted quadrant, `disc`, plus
   `and`/`or`/`not` combinators — a finite block is `and` of 4 half-planes);
-  built-in levels already are this format, so any level can be remixed.
+  built-in levels already are this format, so "start from a level…" opens an
+  editable copy of any campaign or published community level.
   Publishing requires a finished test drive: the input log is sent along and
   re-verified server-side against the posted def, so every shared level is
   provably completable and launches with its author's run as the first record
