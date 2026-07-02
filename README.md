@@ -44,7 +44,9 @@ spectating, `__ghost()` + `__setGhosts(v)` ghost racing, `__setName(n)`,
 
 Project `trailer-trainer` (Postgres + `app` service, Dockerfile build,
 healthcheck `/api/health`, `DATABASE_URL` referenced from the Postgres
-service). Deploy from the repo root:
+service). The `app` service is connected to this repo's `main` branch —
+**every push to main auto-deploys** via Railway's GitHub integration (no
+GitHub Actions involved). For a one-off deploy of uncommitted work:
 
 ```sh
 railway up --service app --detach
