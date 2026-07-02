@@ -123,12 +123,23 @@ function boxesOverlap(A,B){ const axes=[]; const add=b=>{const c=Math.cos(b.ang)
     if(mxA<mnB||mxB<mnA) return false; }
   return true; }
 function regionInside(rg,x,y){
+  // CSG combinators (additive — no shipped level uses them, so replays of
+  // existing records never reach these branches). Editor levels compose
+  // primitives with them: a finite block is and(4 half-planes), etc.
+  if(rg.t==="or"){ for(const k of rg.kids){ if(regionInside(k,x,y)) return true; } return false; }
+  if(rg.t==="and"){ for(const k of rg.kids){ if(!regionInside(k,x,y)) return false; } return true; }
+  if(rg.t==="not"){ return !regionInside(rg.kid,x,y); }
   if(rg.t==="half"){ return rg.sign*((rg.axis==="x"?x:y)-rg.at) >= 0; }
   if(rg.t==="disc"){ const ins=(x-rg.cx)**2+(y-rg.cy)**2 <= rg.r*rg.r; return rg.mode==="out"?!ins:ins; }
-  let inq, X = rg.flipx ? -x : x;
-  if(X<rg.ex || y<rg.ey) inq=false;
-  else if(X<rg.ccx && y<rg.ccy){
-    const dx=Math.abs(X-rg.ccx), dy=Math.abs(y-rg.ccy);
+  // quad: infinite quadrant (X>=ex, Y>=ey) with a superellipse-filleted inner
+  // corner (radius r, exponent n, centre ccx/ccy). flipx/flipy mirror the
+  // world into the primitive's frame; params are given in that frame.
+  // flipy is editor-era (additive): absent on all shipped levels, and Y===y
+  // exactly when unset, so legacy evaluation is bit-identical.
+  let inq, X = rg.flipx ? -x : x, Y = rg.flipy ? -y : y;
+  if(X<rg.ex || Y<rg.ey) inq=false;
+  else if(X<rg.ccx && Y<rg.ccy){
+    const dx=Math.abs(X-rg.ccx), dy=Math.abs(Y-rg.ccy);
     inq = rg.n ? (Math.pow(dx,rg.n)+Math.pow(dy,rg.n) <= Math.pow(rg.r,rg.n))
                : (dx*dx+dy*dy <= rg.r*rg.r);
   }

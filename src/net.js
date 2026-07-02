@@ -26,6 +26,28 @@ export async function fetchReplay(id){
   }catch(e){ return null; }
 }
 
+// custom levels: fetch one def, list recent community levels, publish
+export async function fetchLevelDef(id){
+  try{
+    return await J(await fetch(`/api/levels?id=${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(8000) }));
+  }catch(e){ return null; }
+}
+export async function fetchLevelList(){
+  try{
+    return await J(await fetch('/api/levels', { signal: AbortSignal.timeout(8000) }));
+  }catch(e){ return null; }
+}
+export async function publishLevel(payload){
+  try{
+    const r = await fetch('/api/levels', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload), signal: AbortSignal.timeout(30000),
+    });
+    if(r.status === 422) return { ok:false, rejected:true, ...(await r.json().catch(()=>({}))) };
+    return await J(r) ?? { ok:false, offline:true };
+  }catch(e){ return { ok:false, offline:true }; }
+}
+
 export async function submitRun(payload){
   try{
     const r = await fetch('/api/runs', {

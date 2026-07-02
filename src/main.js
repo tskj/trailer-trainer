@@ -5,9 +5,11 @@
 import { createScene } from './render3d.js';
 import { createSim, TICK, SIM_VERSION, MAX_STEER, G, JACK_TRIGGER,
          rowFromInput, inputFromRow, packTicks, clamp, norm } from './sim.js';
-import { LEVELS } from './levels.js';
+import { LEVELS, hydrateLevel } from './levels.js';
 import * as audio from './audio.js';
-import { fetchBoards, fetchSummary, fetchReplay, submitRun } from './net.js';
+import { fetchBoards, fetchSummary, fetchReplay, submitRun,
+         fetchLevelDef, fetchLevelList, publishLevel } from './net.js';
+import { createEditor } from './editor.js';
 
 (() => {
 "use strict";
@@ -49,6 +51,11 @@ let watch=null, watchEndOpen=false, lastReplay=null, feedThr=0, feedBrk=false;
 // tick per player tick, so both launch together when the countdown ends.
 let ghost=null;                                   // {sim, feed, i, name, prev, curr}
 const ghostCache={};                              // levelId -> replay payload (null = none/offline)
+// level editor + custom levels. editorProof holds the packed input log of a
+// successful test drive of the exact current def — publishing sends it as the
+// server-verified completability proof (and the level's first record).
+let ED=null, editorOpen=false, editorProof=null, editorReturnIdx=1, draftDefJson=null;
+let commCache=null, commAt=0;                     // community level list cache
 // pre-run countdown (client-side only — the sim and the recorded run start at
 // tick 0 when it expires, so replays/leaderboards are untouched). Holding
 // acc/rev/steer through it is legal: those inputs simply apply from tick 0.
@@ -115,6 +122,18 @@ function loadLevel(i, forcedSeed){
   updateCount();
   showIntro();
   armGhost();
+  // shareable URL mirrors the level being played
+  try{
+    if(level.custom && !level.draft) history.replaceState(null, '', '?level='+level.id);
+    else if(location.search) history.replaceState(null, '', location.pathname);
+  }catch(e){}
+}
+// custom levels join LEVELS at runtime (idempotent per id), so the whole
+// id-keyed pipeline — boards, ghosts, replays, level select — just works
+function ensureCustomLevel(def, id){
+  let i = LEVELS.findIndex(l => l.id === id);
+  if(i < 0){ LEVELS.push(hydrateLevel(def, id)); i = LEVELS.length - 1; }
+  return i;
 }
 const nextLevel = () => loadLevel((levelIdx+1)%LEVELS.length);
 
@@ -124,7 +143,9 @@ function showIntro(){
   $("introName").textContent = level.name;
   $("introGoal").textContent = level.goal;
   const rec=$("introRec"); rec.textContent='';
-  if(level.id!=='free'){
+  if(level.draft){
+    rec.textContent = 'test drive — park it to unlock publishing · Esc returns to the editor';
+  } else if(level.id!=='free'){
     const lid=level.id;
     fetchBoards(lid).then(b=>{
       if(lid!==level.id || !b || watch) return;   // watch mode owns the intro text
@@ -205,7 +226,7 @@ const rewatch = () => { if(lastReplay) startReplay(lastReplay); };
 // no-ops unless ghosts are enabled. The replay payload is cached per level so
 // the Space-grind loop never refetches.
 async function armGhost(){
-  if(!ghostsOn || watch || level.id==='free') return;
+  if(!ghostsOn || watch || level.id==='free' || level.draft) return;
   const lid=level.id, mySim=sim;
   let rep = ghostCache[lid];
   if(rep === undefined){
@@ -250,6 +271,18 @@ async function finishRun(){
   audio.chime();
   resultsOpen=true;
   const m = sim.metrics();
+  if(level.draft){
+    // editor test drive: no submit, no PBs — the finished run becomes the
+    // publish proof (valid only for the def that was tested)
+    $("resTime").textContent=fmtTime(m.timeMs); $("resTime").classList.remove('pb');
+    $("resDist").textContent=fmtDist(m.dist);   $("resDist").classList.remove('pb');
+    $("resTimePB").textContent=''; $("resDistPB").textContent='';
+    editorProof = { json: draftDefJson, seed, ticks: packTicks(rows), claim: m };
+    $("resStatus").innerHTML = '<span class="ok">✓ test passed</span> — press <span class="kbd">Esc</span> to return to the editor and publish';
+    renderBoard("boardTime", []); renderBoard("boardDist", []);
+    $("results").classList.add("show");
+    return;
+  }
   const pb = pbs[level.id] || (pbs[level.id]={});
   const pbT = !(pb.timeMs<=m.timeMs), pbD = !(pb.dist<=m.dist);
   if(pbT) pb.timeMs=m.timeMs; if(pbD) pb.dist=m.dist; savePbs();
@@ -276,6 +309,54 @@ async function finishRun(){
   }
 }
 
+// ------------------------------------------------------------- level editor
+function openEditor(){
+  if(lvselOpen) closeLvSel();
+  if(!ED) ED = createEditor({
+    R,
+    surface: $("edSurface"), gizmos: $("edGizmos"),
+    onDefChanged: () => { editorProof=null; ED.setProofState(false); },
+    onTest: startDraftTest,
+    onPublish: doPublish,
+    onPlayPublished: id => { const i=LEVELS.findIndex(l=>l.id===id); closeEditor(false); if(i>=0) loadLevel(i); },
+    onExit: () => closeEditor(true),
+    getRemixSource: () => LEVELS[editorReturnIdx] || level,
+  });
+  if(!level.draft) editorReturnIdx = levelIdx;
+  editorOpen = true;
+  $("results").classList.remove("show"); resultsOpen=false;
+  document.body.classList.add("editing");
+  $("editor").style.display='';
+  ED.activate();
+  ED.setProofState(!!editorProof && editorProof.json === JSON.stringify(ED.getDef()));
+  if(editorProof) ED.setStatus('test passed — ready to publish');
+}
+function closeEditor(reload){
+  editorOpen=false;
+  document.body.classList.remove("editing");
+  $("editor").style.display='none';
+  last=performance.now();
+  if(reload) loadLevel(Math.min(editorReturnIdx, LEVELS.length-1));
+}
+function startDraftTest(def){
+  draftDefJson = JSON.stringify(def);
+  const lv = hydrateLevel(JSON.parse(draftDefJson), '__draft'); lv.draft = true;
+  const i = LEVELS.findIndex(l=>l.id==='__draft');
+  const idx = i>=0 ? (LEVELS[i]=lv, i) : (LEVELS.push(lv), LEVELS.length-1);
+  editorProof=null;
+  editorOpen=false; document.body.classList.remove("editing"); $("editor").style.display='none';
+  loadLevel(idx);
+}
+async function doPublish(def){
+  const json = JSON.stringify(def);
+  if(!name) return { ok:false, reason:'pick a driver name first (Tab → click your name)' };
+  if(!editorProof || editorProof.json !== json) return { ok:false, reason:'test drive this version first' };
+  const res = await publishLevel({ def, author: name, v: SIM_VERSION,
+    run: { seed: editorProof.seed, ticks: editorProof.ticks, claim: editorProof.claim } });
+  if(res.ok){ ensureCustomLevel(def, res.id); commCache=null; }
+  return res;
+}
+
 // ---------------------------------------------------------------- overlays
 function openNameGate(prefill){
   nameGateOpen=true; $("nameGate").classList.add("show");
@@ -294,7 +375,7 @@ function confirmName(){
 
 function openLvSel(){
   lvselOpen=true; lvSelIdx=levelIdx;
-  buildLvRows(); renderLvBoards();
+  buildLvRows(); renderLvBoards(); renderCommunity();
   $("lvName").textContent=name||'?';
   $("lvsel").classList.add("show");
   if(!summaryCache || Date.now()-summaryAt>30000){
@@ -312,8 +393,9 @@ function buildLvRows(){
   const box=$("lvRows"); box.replaceChildren();
   const touch=()=>document.body.classList.contains('touch');
   LEVELS.forEach((lv,i)=>{
+    if(lv.draft) return;
     const row=document.createElement('div'); row.className='lv-row'+(i===lvSelIdx?' sel':'');
-    const n=document.createElement('span'); n.className='n'; n.textContent = i===0?'0':String(i);
+    const n=document.createElement('span'); n.className='n'; n.textContent = lv.custom ? '★' : (i===0?'0':String(i));
     const nm=document.createElement('span'); nm.textContent=lv.name.replace(/^\d+ · /,'');
     const pb=document.createElement('span'); pb.className='pb';
     const p=pbs[lv.id];
@@ -361,6 +443,40 @@ function renderLvBoards(){
     if(lvselOpen && LEVELS[lvSelIdx].id===lid) paint(b);
   });
 }
+// shared community levels (not yet loaded this session) under the level list
+function renderCommunity(){
+  const box=$("lvComm");
+  const paint=list=>{
+    box.replaceChildren(); box.style.display='none';
+    if(!list) return;
+    const fresh=list.filter(L=>!LEVELS.some(l=>l.id===L.id));
+    if(!fresh.length) return;
+    box.style.display='';
+    const h=document.createElement('div'); h.className='lvc-head'; h.textContent='Community levels'; box.appendChild(h);
+    fresh.forEach(L=>{
+      const row=document.createElement('div'); row.className='lv-row';
+      const n=document.createElement('span'); n.className='n'; n.textContent='★';
+      const nm=document.createElement('span'); nm.textContent=L.name;
+      const by=document.createElement('span'); by.className='pb'; by.textContent='by '+L.author;
+      const wr=document.createElement('span'); wr.className='wr'; wr.textContent = L.wr ? `${fmtTime(L.wr.timeMs)} ${L.wr.name}` : '';
+      row.append(n,nm,by,wr);
+      row.onclick=async ()=>{
+        row.style.opacity=.5;
+        const r=await fetchLevelDef(L.id);
+        if(r && r.def){ const i=ensureCustomLevel(r.def, r.id); closeLvSel(); loadLevel(i); }
+        else row.style.opacity=1;
+      };
+      box.appendChild(row);
+    });
+  };
+  if(commCache && Date.now()-commAt<30000){ paint(commCache); return; }
+  paint(null);
+  fetchLevelList().then(r=>{
+    commCache = r && r.levels || [];
+    commAt = Date.now();
+    if(lvselOpen) paint(commCache);
+  });
+}
 
 // ---------------------------------------------------------------- keyboard
 addEventListener("keydown", e=>{
@@ -371,22 +487,25 @@ addEventListener("keydown", e=>{
     else if(e.key==="Escape" && name){ nameGateOpen=false; $("nameGate").classList.remove("show"); $("intro").style.visibility=''; last=performance.now(); }
     return;
   }
+  if(editorOpen){ ED.key(e); return; }
   if(e.key==="Tab"){ e.preventDefault(); lvselOpen ? closeLvSel() : openLvSel(); return; }
   if(lvselOpen){
     const sel=i=>{ selectLv(i); document.querySelector('#lvRows .lv-row.sel')?.scrollIntoView({block:'nearest'}); };
+    const step=d=>{ let i=lvSelIdx; do{ i=(i+d+LEVELS.length)%LEVELS.length; }while(LEVELS[i].draft); sel(i); };
     if(e.key==="Escape"){ closeLvSel(); }
-    else if(e.key==="ArrowUp"){ sel((lvSelIdx+LEVELS.length-1)%LEVELS.length); e.preventDefault(); }
-    else if(e.key==="ArrowDown"){ sel((lvSelIdx+1)%LEVELS.length); e.preventDefault(); }
+    else if(e.key==="ArrowUp"){ step(-1); e.preventDefault(); }
+    else if(e.key==="ArrowDown"){ step(1); e.preventDefault(); }
     else if(e.key==="Enter"){ const i=lvSelIdx; closeLvSel(); loadLevel(i); }
     else if(k==="g"){ toggleGhosts(); }
     else if(/^[0-9]$/.test(k)){ const i=parseInt(k,10); if(i<LEVELS.length){ closeLvSel(); loadLevel(i); } }
     return;
   }
   audio.ensureAudio();
+  if(e.key==="Escape" && level.draft){ openEditor(); return; }
   if(e.key==="Escape" && (watch||watchEndOpen)){ openLvSel(); return; }
   if(watchEndOpen && k==="r"){ rewatch(); e.preventDefault(); return; }
   if(k===" "||k==="r"){ loadLevel(levelIdx); e.preventDefault(); return; }
-  if(e.key==="Enter"){ if(resultsOpen) nextLevel(); else if(watchEndOpen) loadLevel(levelIdx); return; }
+  if(e.key==="Enter"){ if(resultsOpen){ level.draft ? openEditor() : nextLevel(); } else if(watchEndOpen) loadLevel(levelIdx); return; }
   if(k==="n"){ nextLevel(); return; }
   if(k==="l"){ openLvSel(); return; }
   if(k==="c"){ rotateFollow=!rotateFollow; if(rotateFollow&&sim) camRot=-Math.PI/2-sim.st.theta; camSnap=true; return; }
@@ -405,6 +524,7 @@ $("tapRetry").onclick=()=>loadLevel(levelIdx);
 $("tapNext").onclick=()=>nextLevel();
 $("tapLevels").onclick=()=>openLvSel();
 $("lvDrive").onclick=()=>{ const i=lvSelIdx; closeLvSel(); loadLevel(i); };
+$("edOpen").onclick=()=>{ audio.ensureAudio(); openEditor(); };
 $("ghostBtn").onclick=()=>toggleGhosts();
 syncGhostBtn();
 $("weRewatch").onclick=()=>{ audio.ensureAudio(); rewatch(); };
@@ -418,7 +538,7 @@ $("lvsel").addEventListener("click", e=>{ if(e.target.id==="lvsel") closeLvSel()
 const stageEl = document.querySelector(".stage");
 stageEl.addEventListener("mousemove", e=>{
   if(!sim || document.body.classList.contains("touch")) return;
-  if(nameGateOpen||lvselOpen) return;
+  if(nameGateOpen||lvselOpen||editorOpen) return;
   mouseSteer = true;
   const r = stageEl.getBoundingClientRect();
   if(locked){
@@ -547,6 +667,7 @@ function updateCount(){
 let prevState=null, currState=null, acc=0, last=performance.now();
 function frame(now){
   let dt=(now-last)/1000; last=now;
+  if(editorOpen){ ED.frame(); requestAnimationFrame(frame); return; }
   dt=Math.min(dt,0.25);
   if(!(nameGateOpen||lvselOpen) && countT>0){
     countT-=dt; updateCount();
@@ -698,7 +819,13 @@ function render(prev, curr, alpha){
 
 // ---------------------------------------------------------------- boot
 R.resize();
+// capture the shared-link param BEFORE the first loadLevel URL-syncs it away
+const bootLevelId = new URLSearchParams(location.search).get('level');
 loadLevel(1);
+// shared custom-level links: /?level=c_<hash>
+if(bootLevelId && /^c_[0-9a-f]{12}$/.test(bootLevelId)){
+  fetchLevelDef(bootLevelId).then(r => { if(r && r.def) loadLevel(ensureCustomLevel(r.def, r.id)); });
+}
 if(!name) openNameGate('');
 else $("lvName").textContent=name;
 requestAnimationFrame(frame);
@@ -726,4 +853,9 @@ window.__watchState = () => ({ watching: !!watch, who: watch&&watch.name, ended:
 window.__ghost = () => ghost ? { name: ghost.name, tick: ghost.i, of: ghost.feed.length, done: ghost.sim.done,
   x: ghost.sim.st.x, y: ghost.sim.st.y, on: ghostsOn } : { on: ghostsOn };
 window.__setGhosts = v => { if(!!v!==ghostsOn) toggleGhosts(); };
+// e2e: drive the editor programmatically
+window.__edOpen = () => openEditor();
+window.__edSetDef = d => { if(ED) ED.setDef(d); };
+window.__edGetDef = () => ED && ED.getDef();
+window.__edState = () => ({ open: editorOpen, proof: !!editorProof, draft: !!(level&&level.draft), level: level&&level.id });
 })();

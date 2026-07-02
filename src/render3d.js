@@ -293,22 +293,30 @@ export function createScene(canvas, G) {
         g.add(body, band, base);
         g.position.set(o.x, 0, o.y);
         dyn.add(g);
-      } else if (o.t === 'wall' || o.t === 'disc' || o.t === 'half' || o.t === 'quad') {
-        // every keep-out shape -> a flat hatched polygon lying on the tarmac
-        let pts = null;
+      } else {
+        // every keep-out shape -> a flat hatched polygon lying on the tarmac.
+        // 'or'/'not' composites the editor doesn't emit get no fill (the sim
+        // still enforces them).
+        let pts = null, hole = null, edgePts = null;
         if (o.t === 'wall') {
           const ca = Math.cos(o.ang), sa = Math.sin(o.ang);
           const cn = (lx, lz) => [o.x + lx * ca - lz * sa, o.y + lx * sa + lz * ca];
           pts = [cn(-o.hl, -o.hw), cn(o.hl, -o.hw), cn(o.hl, o.hw), cn(-o.hl, o.hw)];
         } else if (o.t === 'disc') {
-          pts = [];
+          const circ = [];
           const N = 48;
-          for (let i = 0; i < N; i++) { const a = i / N * Math.PI * 2; pts.push([o.cx + o.r * Math.cos(a), o.cy + o.r * Math.sin(a)]); }
-        } else {
+          for (let i = 0; i < N; i++) { const a = i / N * Math.PI * 2; circ.push([o.cx + o.r * Math.cos(a), o.cy + o.r * Math.sin(a)]); }
+          if (o.mode === 'out') {   // deadly everywhere EXCEPT the disc: big slab with a circular hole
+            pts = [[-B, -B], [B, -B], [B, B], [-B, B]]; hole = circ; edgePts = circ;
+          } else pts = circ;
+        } else if (o.t === 'and') {
+          pts = andBlockRect(o);    // finite block = and(4 half-planes), the editor's "Block" tool
+        } else if (o.t === 'half' || o.t === 'quad') {
           pts = regionPolygon(o);
         }
         if (pts) {
           const shape = new THREE.Shape(pts.map(p => new THREE.Vector2(p[0], -p[1])));  // -y => world +z
+          if (hole) shape.holes.push(new THREE.Path(hole.map(p => new THREE.Vector2(p[0], -p[1]))));
           const geo = new THREE.ShapeGeometry(shape);
           geo.rotateX(-Math.PI / 2);
           const m = new THREE.Mesh(geo, hatchMat);
@@ -316,7 +324,7 @@ export function createScene(canvas, G) {
           m.receiveShadow = true; dyn.add(m);
           // outline the region edge so the hatch reads as a clearly bordered zone
           const edge = new THREE.LineLoop(
-            new THREE.BufferGeometry().setFromPoints(pts.map(p => new THREE.Vector3(p[0], 0.2, p[1]))),
+            new THREE.BufferGeometry().setFromPoints((edgePts || pts).map(p => new THREE.Vector3(p[0], 0.2, p[1]))),
             edgeMat);
           dyn.add(edge);
         }
@@ -375,7 +383,8 @@ export function createScene(canvas, G) {
     }
 
     // --- camera ---
-    const vs = viewScale * (window.__camZoom || 1);   // __camZoom: debug dolly for screenshot scripts
+    // view.dolly: multiplies camera distance (editor pan/zoom); __camZoom: debug hook
+    const vs = viewScale * (view.dolly || window.__camZoom || 1);
     if (view.rotateFollow) {
       const thS = -Math.PI / 2 - view.camRot;        // recover smoothed heading from camRot
       const fx = Math.cos(thS), fz = Math.sin(thS);
@@ -432,6 +441,17 @@ export function createScene(canvas, G) {
     drawQuad(post.material, null);
   }
 
+  // screen point (css px) -> world ground point: ray through the camera onto
+  // y=0. Ignores the post-pass lens barrel (~1px at edges; the editor snaps
+  // to a grid anyway).
+  function unproject(sx, sy) {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    const v = new THREE.Vector3((sx / w * 2 - 1) / OVERSCAN, -(sy / h * 2 - 1) / OVERSCAN, 0.5).unproject(camera);
+    const o = camera.position, d = v.sub(o).normalize();
+    const t = -o.y / (d.y || -1e-9);
+    return { x: o.x + d.x * t, y: o.z + d.z * t };
+  }
+
   function project(x, y) {
     const v = new THREE.Vector3(x, 8, y).project(camera);
     v.x *= OVERSCAN; v.y *= OVERSCAN;             // wide render is cropped back to the display FOV
@@ -457,7 +477,7 @@ export function createScene(canvas, G) {
     const b = trailer.tilt.getWorldPosition(new THREE.Vector3());   // trailer's pivot = its tongue tip
     return { car: [a.x, a.y, a.z], tongue: [b.x, b.y, b.z], gap: a.distanceTo(b) };
   }
-  return { renderer, scene, camera, resize, buildLevel, update, updateGhost, project, aim, updateSkids, clearSkids, hitchDbg, skidCountDbg: () => skidVerts.length/18 };
+  return { renderer, scene, camera, resize, buildLevel, update, updateGhost, project, unproject, aim, updateSkids, clearSkids, hitchDbg, skidCountDbg: () => skidVerts.length/18 };
 }
 
 // =========================================================================
@@ -772,6 +792,19 @@ function buildBay(b, dims, parent) {
 // =========================================================================
 // region polygons (replicate the SVG keep-out shapes)
 // =========================================================================
+// the editor's finite "Block": and(x>=x0, x<=x1, y>=y0, y<=y1) -> rectangle
+function andBlockRect(o) {
+  if (!Array.isArray(o.kids) || o.kids.length !== 4) return null;
+  let x0 = null, x1 = null, y0 = null, y1 = null;
+  for (const k of o.kids) {
+    if (!k || k.t !== 'half') return null;
+    if (k.axis === 'x') { if (k.sign === 1) x0 = k.at; else x1 = k.at; }
+    else if (k.axis === 'y') { if (k.sign === 1) y0 = k.at; else y1 = k.at; }
+  }
+  if ([x0, x1, y0, y1].some(v => v === null) || x1 <= x0 || y1 <= y0) return null;
+  return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+}
+
 function regionPolygon(o) {
   if (o.t === 'half') {
     const a = o.at;
@@ -798,7 +831,8 @@ function regionPolygon(o) {
     } else {
       poly = [[-B, -B], [-B, B], [o.ex, B], [o.ex, o.ccy], ...arc, [B, o.ey], [B, -B]];
     }
-    return poly.map(([x, y]) => [sgn * x, y]);
+    const sy = o.flipy ? -1 : 1;
+    return poly.map(([x, y]) => [sgn * x, sy * y]);
   }
   return null;
 }

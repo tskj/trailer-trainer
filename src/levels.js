@@ -90,3 +90,18 @@ for(const lv of LEVELS){
   if(lv.bay){ const d = BAY[lv.bay.fit]; lv.bay.hl = lv.bay.hl || d.hl; lv.bay.hw = lv.bay.hw || d.hw; }
 }
 export const levelById = id => LEVELS.find(l => l.id === id);
+
+// Turn a stored custom-level definition (plain JSON: the editor's save format)
+// into a runnable level object shaped exactly like a built-in. Shared by the
+// client (play) and the server (verify), so both simulate the same geometry.
+export function hydrateLevel(def, id){
+  const lv = {
+    id, custom: true,
+    name: def.name, goal: def.goal || '',
+    start: { x: def.start.x, y: def.start.y, th: def.start.th },
+    bay: { x: def.bay.x, y: def.bay.y, ang: def.bay.ang, fit: def.bay.fit },
+    obstacles: def.obstacles,
+  };
+  const d = BAY[lv.bay.fit]; lv.bay.hl = d.hl; lv.bay.hw = d.hw;
+  return lv;
+}

@@ -178,6 +178,48 @@
   .we-btns button{font-size:12.5px;padding:9px 16px}
   body.touch.watching .touchSteer,body.touch.watching .touchThrottle,body.touch.watching .touchBrake{display:none}
 
+  /* ---------- level editor ---------- */
+  .editor{position:absolute;inset:0;z-index:8}
+  .ed-surface{position:absolute;inset:0;z-index:1;cursor:crosshair;touch-action:none}
+  .ed-gizmos{position:absolute;inset:0;z-index:2;pointer-events:none}
+  .ed-panel{position:absolute;top:12px;right:12px;bottom:12px;width:250px;z-index:3;padding:14px 16px;
+            display:flex;flex-direction:column;gap:9px;overflow-y:auto;
+            font-family:var(--mono);font-size:11px;color:var(--ink)}
+  .ed-title{font-size:12px;letter-spacing:.22em;color:var(--marking);text-transform:uppercase}
+  .ed-in{font-size:12px;padding:7px 9px;text-align:left}
+  .ed-tools{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px}
+  .ed-tools button{padding:7px 4px;font-size:10.5px}
+  .ed-tools button.on{border-color:var(--cyan);color:var(--cyan)}
+  .ed-params{min-height:52px;border-top:1px solid var(--line);padding-top:8px;line-height:1.8}
+  .ed-grow{flex:1}
+  .ed-dim{color:var(--ink-dim)}
+  .ed-btns{display:flex;gap:6px}
+  .ed-btns button{flex:1}
+  .ed-status{min-height:14px;color:var(--good);font-size:10.5px;line-height:1.5}
+  .ed-status.bad{color:var(--warn)}
+  .ed-link{word-break:break-all;color:var(--cyan);font-size:10px;background:rgba(0,0,0,.3);
+           border-radius:8px;corner-shape:superellipse(3);padding:5px 7px}
+  .ed-keys{font-size:9px}
+  .ed-opts{color:var(--ink-dim)}
+  .editor select{font-family:var(--mono);font-size:11px;background:var(--asphalt);color:var(--ink);
+                 border:1px solid var(--line);border-radius:8px;padding:3px 6px;max-width:100%}
+  .ed-params input[type=number]{width:60px;font-family:var(--mono);font-size:11px;background:rgba(0,0,0,.3);
+                 color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:3px 6px}
+  .ed-handle{position:absolute;width:14px;height:14px;border:2px solid rgba(57,194,215,.65);
+             background:rgba(57,194,215,.15);border-radius:50%;display:flex;align-items:center;
+             justify-content:center;font:700 8px var(--mono);color:var(--marking)}
+  .ed-handle.bay{border-color:rgba(242,196,77,.85);border-radius:5px}
+  .ed-handle.start{border-color:rgba(86,217,138,.85);border-radius:5px;color:var(--good)}
+  .ed-handle.sel{box-shadow:0 0 12px rgba(57,194,215,.9);border-color:#fff}
+  body.editing .steerbar,body.editing .runhud,body.editing .intro,body.editing .goalArrow,
+  body.editing .count,body.editing .touchctl,body.editing .touchSteerBar,body.editing .dead,
+  body.editing .ring{display:none!important}
+
+  /* community levels in the level select */
+  .lv-comm{display:flex;flex-direction:column;gap:4px;margin-top:10px}
+  .lvc-head{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;color:var(--ink-dim);
+            text-transform:uppercase;margin-bottom:2px;border-bottom:1px solid var(--line);padding-bottom:4px}
+
   button{font-family:var(--mono);font-size:11px;letter-spacing:.04em;padding:8px 12px;border-radius:16px;
          corner-shape:superellipse(3);cursor:pointer;background:var(--asphalt);color:var(--ink);
          border:1px solid var(--line);transition:.1s}
@@ -337,10 +379,14 @@
       <div class="lv-head">
         <span class="lv-title">Levels</span>
         <button id="ghostBtn" title="race the level's WR as a ghost (G)">ghost: off</button>
+        <button id="edOpen" title="build your own level">editor</button>
         <span class="lv-name">driving as <b id="lvName" title="click to change name">?</b></span>
       </div>
       <div class="lv-body">
-        <div class="lv-rows" id="lvRows"></div>
+        <div>
+          <div class="lv-rows" id="lvRows"></div>
+          <div class="lv-comm" id="lvComm" style="display:none"></div>
+        </div>
         <div class="lv-board">
           <div class="lvb-head">
             <span class="lvb-name" id="lvbName"></span>
@@ -357,6 +403,59 @@
         <div><span class="kbd">1–9</span> jump · <span class="kbd">↑↓</span> pick · <span class="kbd">Enter</span> drive · <span class="kbd">Esc</span> close</div>
         <div style="margin-top:3px"><span class="kbd">C</span> camera · <span class="kbd">T</span> trails · <span class="kbd">G</span> ghost · <span class="kbd">Shift</span> handbrake</div>
       </div>
+    </div>
+  </div>
+
+  <div class="editor" id="editor" style="display:none">
+    <div class="ed-surface" id="edSurface"></div>
+    <div class="ed-gizmos" id="edGizmos"></div>
+    <div class="ed-panel card">
+      <div class="ed-title">Level editor</div>
+      <input class="gate-input ed-in" id="edName" maxlength="40" placeholder="level name" autocomplete="off" spellcheck="false">
+      <input class="gate-input ed-in" id="edGoal" maxlength="140" placeholder="goal text (optional)" autocomplete="off" spellcheck="false">
+      <div class="ed-tools" id="edTools">
+        <button data-tool="select">select</button>
+        <button data-tool="cone">cone</button>
+        <button data-tool="edge">edge</button>
+        <button data-tool="block">block</button>
+        <button data-tool="disc">circle</button>
+        <button data-tool="corner">corner</button>
+      </div>
+      <div class="ed-opts" id="edEdgeOpts" style="display:none">wall fills
+        <select id="edEdgeSide">
+          <option value="y+">downward (+y)</option>
+          <option value="y-">upward (−y)</option>
+          <option value="x+">rightward (+x)</option>
+          <option value="x-">leftward (−x)</option>
+        </select>
+      </div>
+      <div class="ed-opts" id="edDiscOpts" style="display:none"><label><input type="checkbox" id="edDiscOut"> inverted — deadly <i>outside</i> (arena)</label></div>
+      <div class="ed-opts" id="edCornerOpts" style="display:none">wall fills
+        <select id="edCornerDir">
+          <option value="[false,false]">↘ (+x,+y)</option>
+          <option value="[true,false]">↙ (−x,+y)</option>
+          <option value="[false,true]">↗ (+x,−y)</option>
+          <option value="[true,true]">↖ (−x,−y)</option>
+        </select>
+      </div>
+      <div class="ed-params" id="edParams"></div>
+      <div class="ed-grow"></div>
+      <div class="ed-dim" id="edCount"></div>
+      <div class="ed-btns">
+        <button class="primary" id="edTest">▶ Test drive</button>
+        <button id="edPublish" disabled>Publish</button>
+      </div>
+      <div id="edLinkRow" style="display:none">
+        <div class="ed-link" id="edLink"></div>
+        <div class="ed-btns" style="margin-top:6px"><button id="edCopy">copy link</button><button class="primary" id="edPlay">play it</button></div>
+      </div>
+      <div class="ed-status" id="edStatus"></div>
+      <div class="ed-btns">
+        <button id="edRemix" title="start from the level you were just playing">remix level</button>
+        <button id="edNew">new</button>
+        <button id="edExit">exit</button>
+      </div>
+      <div class="keysline ed-keys">drag space pans · wheel zooms · <span class="kbd">Q</span>/<span class="kbd">E</span> rotate · <span class="kbd">Del</span> remove · <span class="kbd">Ctrl+Z</span> undo</div>
     </div>
   </div>
 

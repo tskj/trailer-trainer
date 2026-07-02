@@ -24,6 +24,20 @@ global leaderboards. Live at **https://trailer-trainer.up.railway.app**.
   change — boards (and replay availability) are per-version.
 - **Two boards per level**: fastest time and shortest distance, best run per
   driver name. Names are honor-system (PoC).
+- **Level editor + custom levels** (`src/editor.js`): built-in level select →
+  "editor". Obstacle geometry is a small CSG language over infinite primitives
+  (`half` plane, `quad` superellipse-filleted quadrant, `disc`, plus
+  `and`/`or`/`not` combinators — a finite block is `and` of 4 half-planes);
+  built-in levels already are this format, so any level can be remixed.
+  Publishing requires a finished test drive: the input log is sent along and
+  re-verified server-side against the posted def, so every shared level is
+  provably completable and launches with its author's run as the first record
+  (and ghost). Level ids are content hashes (`c_<sha256[..12]>`), stored in a
+  `levels` table; share links are `/?level=c_…`; recent community levels are
+  listed in the level select. Boards/ghosts/replays are level-id-keyed, so
+  they work on custom levels unchanged. Editor tools enforce minimum shape
+  sizes (no sub-vehicle slivers); the sim's 9-point collision sampling is
+  frozen as part of recorded physics.
 
 ## Dev
 
@@ -36,8 +50,9 @@ npm run dev                    # vite on :5173, proxies /api -> :3210
 
 Useful debug hooks on `window`: `__tt()` telemetry, `__run()` current run,
 `__feed(seed, packedTicks)` replay injection, `__watch(runId)` + `__watchState()`
-spectating, `__ghost()` + `__setGhosts(v)` ghost racing, `__setName(n)`,
-`__audio()`, `__camZoom` camera dolly. `scripts/*.mjs` are headless playwright helpers
+spectating, `__ghost()` + `__setGhosts(v)` ghost racing, `__edOpen()` +
+`__edSetDef(def)` + `__edGetDef()` + `__edState()` editor automation,
+`__setName(n)`, `__audio()`, `__camZoom` camera dolly. `scripts/*.mjs` are headless playwright helpers
 (SwiftShader runs ~40% real-time; prefer condition-driven waits).
 
 ## Deploy (Railway)
